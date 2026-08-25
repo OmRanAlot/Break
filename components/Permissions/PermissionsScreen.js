@@ -467,7 +467,7 @@ export default function PermissionsScreen({ onComplete }) {
     );
   };
 
-  // Optional opt-in — reuses the accessibility service to show a 30s pause when
+  // Optional opt-in — reuses the accessibility service to show a 60s pause when
   // the user opens Break's uninstall screen. Skippable; persisted in
   // handleComplete() via SettingsModule.saveUninstallLockEnabled().
   const renderProtect = () => {
@@ -499,7 +499,7 @@ export default function PermissionsScreen({ onComplete }) {
           </Text>
           <Text style={styles.permBody}>
             If you head to Break's uninstall screen, a full-screen pause appears
-            for 30 seconds with reasons to keep going. It's gentle friction —
+            for 60 seconds with reasons to keep going. It's gentle friction —
             never a lock, and you can always continue.
           </Text>
           <View style={styles.permReassure}>

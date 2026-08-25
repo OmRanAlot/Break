@@ -33,7 +33,7 @@ import com.Break.prefs.BreakPrefs;
  * {@link #MESSAGE_ROTATE_MS}.
  * - Both action buttons are hidden for
  * {@link BreakPrefs#UNINSTALL_LOCK_DURATION_MS}
- * (30s) then revealed together. NO countdown or timer is ever displayed.
+ * (60s) then revealed together. NO countdown or timer is ever displayed.
  * - "Keep Break" fires the caller's callback (GLOBAL_ACTION_HOME).
  * - "Give up and delete Break anyway" is the deliberately discouraged escape:
  * it dismisses the lock and suppresses re-show for {@link #PROCEED_SUPPRESS_MS}
@@ -143,12 +143,15 @@ public class UninstallLockOverlay {
                 return;
             }
 
+            // Fully-modal window: no FLAG_NOT_TOUCH_MODAL so the overlay captures
+            // ALL touches and the Settings/packageinstaller Uninstall button beneath
+            // is unreachable.  FLAG_LAYOUT_IN_SCREEN extends coverage to the status
+            // and navigation bar areas (matches LaunchInterceptor behaviour).
             WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                            | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.OPAQUE);
             params.gravity = Gravity.CENTER;
 

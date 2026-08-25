@@ -13,8 +13,8 @@ import { styles } from './customize.styles';
 
 const WHAT_IT_DOES = [
   'Uses the accessibility service you already granted to notice when you open Break’s App Info / uninstall screen in Android Settings.',
-  'Shows a full-screen pause for 30 seconds with reasons to keep going.',
-  'After the 30 seconds you can continue — it never permanently stops you from uninstalling.',
+  'Shows a full-screen pause for 60 seconds with reasons to keep going.',
+  'After the 60 seconds you can continue — it never permanently stops you from uninstalling.',
 ];
 
 const RISKS = [

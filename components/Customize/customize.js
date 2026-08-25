@@ -83,7 +83,7 @@ const Customize = ({ navigation }) => {
     useState(false);
 
   // ── Deletion-prevention (uninstall lock) state ───────────────────────────
-  // Opt-in. When on, a 30s lock screen appears if the user opens the Break
+  // Opt-in. When on, a 60s lock screen appears if the user opens the Break
   // uninstall screen in Android Settings.
   const [uninstallLockEnabled, setUninstallLockEnabled] = useState(false);
   // Confirmation modal shown before enabling deletion prevention, so the user
@@ -650,7 +650,7 @@ const Customize = ({ navigation }) => {
               <Text style={styles.toggleLabel}>Prevent deletion</Text>
               <Text style={styles.toggleCaption}>
                 If you open the Break uninstall screen, a full-screen pause
-                appears for 30 seconds with reasons to keep going before you can
+                appears for 60 seconds with reasons to keep going before you can
                 continue. Helps you not quit on impulse.
               </Text>
             </View>

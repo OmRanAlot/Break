@@ -211,7 +211,7 @@ public final class BreakPrefs {
     public static final String KEY_DELETE_REQUEST_EXPIRES_AT = "delete_request_expires_at";
     public static final String KEY_DELETE_REQUEST_BOOT_ID = "delete_request_boot_id";
 
-    public static final long UNINSTALL_LOCK_DURATION_MS = 60_000L; // 30-second delay
+    public static final long UNINSTALL_LOCK_DURATION_MS = 60_000L; // 60-second pause before Keep/Delete appear
     public static final String UNINSTALL_LOCK_CONSENT_VERSION_CURRENT = "2026-05-12-v1";
 
     // ── Configuration Cooldown ("Commitment Lock") ─────────────────────────────
