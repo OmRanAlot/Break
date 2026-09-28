@@ -167,6 +167,7 @@ public class ReelsInterventionService extends AccessibilityService {
     // --- WindowManager Overlays ---
     private InterventionOverlay interventionOverlay;
     private UninstallLockOverlay uninstallOverlay;
+    private ContentFilterLockOverlay contentFilterOverlay;
 
     // --- Mindful Viewing Coach (YouTube typing gate) ---
     // All trigger logic (launch gate + every-X-min re-fire) lives in
@@ -273,6 +274,8 @@ public class ReelsInterventionService extends AccessibilityService {
         youtubeDetector   = new YouTubeDetector(this, TAG);
         interventionOverlay = new InterventionOverlay(this, mainHandler);
         uninstallOverlay = new UninstallLockOverlay(this, mainHandler);
+        contentFilterOverlay = new ContentFilterLockOverlay(this, mainHandler);
+        BrowserBarContentFilter.setLockOverlay(contentFilterOverlay);
         coachGate = new YouTubeCoachGate(this, mainHandler, frameworkClassFilter, TAG);
         budgetState       = new BudgetState(this);
         budgetState.load(BreakPrefs.get(this));
@@ -587,6 +590,8 @@ public class ReelsInterventionService extends AccessibilityService {
         // Service interrupted (e.g. user revoked permission) — clean up any visible overlay
         dismissIntervention();
         if (uninstallOverlay != null) uninstallOverlay.dismiss();
+        if (contentFilterOverlay != null) contentFilterOverlay.dismiss();
+        BrowserBarContentFilter.setLockOverlay(null);
         if (budgetConfigListener != null) {
             BreakPrefs.get(this).unregisterOnSharedPreferenceChangeListener(budgetConfigListener);
             budgetConfigListener = null;
@@ -610,6 +615,8 @@ public class ReelsInterventionService extends AccessibilityService {
     public void onDestroy() {
         BrowserBarContentFilter.cancelDeferredCallbacks();
         if (uninstallOverlay != null) uninstallOverlay.dismiss();
+        if (contentFilterOverlay != null) contentFilterOverlay.dismiss();
+        BrowserBarContentFilter.setLockOverlay(null);
         if (budgetConfigListener != null) {
             BreakPrefs.get(this).unregisterOnSharedPreferenceChangeListener(budgetConfigListener);
             budgetConfigListener = null;

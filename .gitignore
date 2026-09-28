@@ -97,3 +97,4 @@ android/gradle.properties
 android/app/*.keystore
 C:\Users\omran\code\DoomScrollStopper\android\gradle.properties
 android\gradle.properties
+.gradle-user/

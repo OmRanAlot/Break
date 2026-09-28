@@ -47,6 +47,7 @@ class MainApplication : Application(), ReactApplication {
 
     override fun onCreate() {
         super.onCreate()
+        com.Break.onboarding.OnboardingStore.initialize(this)
         CookieManager.getInstance().setAcceptCookie(true)
 
         // Migrate legacy blocked_apps → per-app policies (runs once, no-op after)

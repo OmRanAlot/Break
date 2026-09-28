@@ -8,12 +8,13 @@ import {
   deriveGuardState,
   formatRemaining,
   GUARD_STATES,
-  CF_INTERNAL_CONFIRM_WINDOW_MS,
 } from '../../components/shared/lockCycle';
 
 const HOUR = 60 * 60 * 1000;
-const DURATION = 24 * HOUR; // lock segment
-const BASE = 1_780_000_000_000; // stamped lockUntil (end of first lock)
+const DURATION = 24 * HOUR; // default Settings Change Lock duration
+const BASE = 1_780_000_000_000; // arbitrary epoch anchor
+const READY = BASE + DURATION; // when the layer-off wait ends
+const AUTO_ON_MS = 12 * HOUR;
 
 describe('deriveLockCycle', () => {
   test('returns idle state when never locked (base = 0)', () => {
@@ -78,7 +79,6 @@ describe('deriveLockCycle', () => {
   });
 
   test('ignores graceMs even when a non-zero value is passed (re-arm removed)', () => {
-    // Even if legacy code passes a non-zero graceMs, expiry still means unlocked.
     const result = deriveLockCycle({
       nowMs: BASE + 1,
       baseLockUntilMs: BASE,
@@ -105,85 +105,146 @@ describe('deriveLockCycle', () => {
 });
 
 describe('deriveGuardState', () => {
-  const READY = BASE + DURATION;
-  const CONFIRM_WINDOW = CF_INTERNAL_CONFIRM_WINDOW_MS;
   const baseArgs = {
     doubleSafeEnabled: true,
     filterEnabled: true,
-    pendingDisableAtMs: BASE,
     readyAtMs: READY,
-    confirmWindowMs: CONFIRM_WINDOW,
+    autoOnAtMs: 0,
   };
 
-  test('reports DISABLED when the filter itself is off', () => {
+  // ── PROTECTED ──────────────────────────────────────────────────────────────
+
+  test('reports PROTECTED when double-safe on and no wait', () => {
     const result = deriveGuardState({
       ...baseArgs,
       nowMs: BASE,
-      filterEnabled: false,
+      readyAtMs: 0,
     });
-
-    expect(result.state).toBe(GUARD_STATES.DISABLED);
+    expect(result.state).toBe(GUARD_STATES.PROTECTED);
+    expect(result.readyAtMs).toBe(0);
+    expect(result.autoOnAtMs).toBe(0);
   });
 
-  test('reports GUARD_OFF when double-safe is not enabled', () => {
+  // ── GUARD_OFF ──────────────────────────────────────────────────────────────
+
+  test('reports GUARD_OFF when double-safe is off and no wait in progress', () => {
     const result = deriveGuardState({
       ...baseArgs,
       nowMs: BASE,
       doubleSafeEnabled: false,
+      readyAtMs: 0,
     });
-
     expect(result.state).toBe(GUARD_STATES.GUARD_OFF);
   });
 
-  test('reports PROTECTED with no pending disable', () => {
+  // ── LAYER_OFF_WAIT ─────────────────────────────────────────────────────────
+
+  test('reports LAYER_OFF_WAIT while the lock-duration wait is running', () => {
+    const result = deriveGuardState({
+      ...baseArgs,
+      nowMs: READY - 1,
+      doubleSafeEnabled: false,
+    });
+    expect(result.state).toBe(GUARD_STATES.LAYER_OFF_WAIT);
+    expect(result.readyAtMs).toBe(READY);
+  });
+
+  test('boundary: one ms before readyAt is still LAYER_OFF_WAIT', () => {
+    const result = deriveGuardState({
+      ...baseArgs,
+      nowMs: READY - 1,
+      doubleSafeEnabled: false,
+    });
+    expect(result.state).toBe(GUARD_STATES.LAYER_OFF_WAIT);
+  });
+
+  // ── LAYER_OFF_READY ────────────────────────────────────────────────────────
+
+  test('reports LAYER_OFF_READY the instant readyAt is reached', () => {
+    const result = deriveGuardState({
+      ...baseArgs,
+      nowMs: READY,
+      doubleSafeEnabled: false,
+    });
+    expect(result.state).toBe(GUARD_STATES.LAYER_OFF_READY);
+    expect(result.readyAtMs).toBe(READY);
+  });
+
+  test('remains LAYER_OFF_READY well past readyAt (no auto-expiry)', () => {
+    const result = deriveGuardState({
+      ...baseArgs,
+      nowMs: READY + 100 * HOUR,
+      doubleSafeEnabled: false,
+    });
+    expect(result.state).toBe(GUARD_STATES.LAYER_OFF_READY);
+  });
+
+  // ── TEMP_OFF ───────────────────────────────────────────────────────────────
+
+  test('reports TEMP_OFF while filter is off and auto-on timer is running', () => {
+    const autoOnAt = BASE + AUTO_ON_MS;
+    const result = deriveGuardState({
+      ...baseArgs,
+      nowMs: autoOnAt - 1,
+      filterEnabled: false,
+      doubleSafeEnabled: false,
+      readyAtMs: 0,
+      autoOnAtMs: autoOnAt,
+    });
+    expect(result.state).toBe(GUARD_STATES.TEMP_OFF);
+    expect(result.autoOnAtMs).toBe(autoOnAt);
+  });
+
+  test('auto-re-enables (treats filter as on) once 12h elapses in TEMP_OFF', () => {
+    const autoOnAt = BASE + AUTO_ON_MS;
+    const result = deriveGuardState({
+      ...baseArgs,
+      nowMs: autoOnAt, // exactly at boundary
+      filterEnabled: false,
+      doubleSafeEnabled: false,
+      readyAtMs: 0,
+      autoOnAtMs: autoOnAt,
+    });
+    // Once elapsed, filter is treated as on; no wait pending → GUARD_OFF
+    expect(result.state).toBe(GUARD_STATES.GUARD_OFF);
+    expect(result.autoOnAtMs).toBe(0);
+  });
+
+  test('auto-re-enable boundary: one ms before timer is still TEMP_OFF', () => {
+    const autoOnAt = BASE + AUTO_ON_MS;
+    const result = deriveGuardState({
+      ...baseArgs,
+      nowMs: autoOnAt - 1,
+      filterEnabled: false,
+      doubleSafeEnabled: false,
+      readyAtMs: 0,
+      autoOnAtMs: autoOnAt,
+    });
+    expect(result.state).toBe(GUARD_STATES.TEMP_OFF);
+  });
+
+  // ── DISABLED ───────────────────────────────────────────────────────────────
+
+  test('reports DISABLED when filter is off and no auto-on timer', () => {
     const result = deriveGuardState({
       ...baseArgs,
       nowMs: BASE,
-      pendingDisableAtMs: 0,
+      filterEnabled: false,
+      autoOnAtMs: 0,
     });
-
-    expect(result.state).toBe(GUARD_STATES.PROTECTED);
-    expect(result.readyAtMs).toBe(0);
+    expect(result.state).toBe(GUARD_STATES.DISABLED);
   });
 
-  test('reports PENDING_WAIT during the full-duration wait', () => {
-    const result = deriveGuardState({ ...baseArgs, nowMs: READY - 1 });
+  // ── Double-safe on takes priority over wait timestamps ─────────────────────
 
-    expect(result.state).toBe(GUARD_STATES.PENDING_WAIT);
-    expect(result.readyAtMs).toBe(READY);
-    expect(result.confirmEndsAtMs).toBe(READY + CONFIRM_WINDOW);
-  });
-
-  test('opens CONFIRM_WINDOW the instant the wait ends', () => {
-    const result = deriveGuardState({ ...baseArgs, nowMs: READY });
-
-    expect(result.state).toBe(GUARD_STATES.CONFIRM_WINDOW);
-  });
-
-  test('auto re-instates PROTECTED once the confirm window lapses', () => {
+  test('reports PROTECTED even if stale readyAt is non-zero when double-safe is on', () => {
     const result = deriveGuardState({
       ...baseArgs,
-      nowMs: READY + CONFIRM_WINDOW,
+      nowMs: READY - 1,
+      doubleSafeEnabled: true,
+      readyAtMs: READY,
     });
-
     expect(result.state).toBe(GUARD_STATES.PROTECTED);
-    expect(result.readyAtMs).toBe(0);
-    expect(result.confirmEndsAtMs).toBe(0);
-  });
-
-  test('4h internal confirm window: open just before expiry, closed at boundary', () => {
-    expect(
-      deriveGuardState({
-        ...baseArgs,
-        nowMs: READY + CF_INTERNAL_CONFIRM_WINDOW_MS - 1,
-      }).state,
-    ).toBe(GUARD_STATES.CONFIRM_WINDOW);
-    expect(
-      deriveGuardState({
-        ...baseArgs,
-        nowMs: READY + CF_INTERNAL_CONFIRM_WINDOW_MS,
-      }).state,
-    ).toBe(GUARD_STATES.PROTECTED);
   });
 });
 

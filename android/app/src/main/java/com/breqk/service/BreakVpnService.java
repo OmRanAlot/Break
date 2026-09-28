@@ -101,6 +101,11 @@ public class BreakVpnService extends Service {
 
         switch (action) {
                 case "START_MONITORING":
+                    if (!BreakPrefs.get(this).getBoolean(BreakPrefs.KEY_MONITORING_ENABLED, true)) {
+                        stopMonitoring();
+                        stopSelf();
+                        return START_NOT_STICKY;
+                    }
                     Notification notification = createNotification("Break Active");
                     startForeground(NOTIFICATION_ID, notification);
                     startMonitoring();
@@ -188,6 +193,8 @@ public class BreakVpnService extends Service {
                 monitor.setBlockedApps(savedBlockedApps);
             }
         }
+        monitor.setBlockedApps(BreakPrefs.getBlockedApps(this));
+        monitor.reloadSettings();
         loadScrollBudgetIntoMonitor(monitor);
         monitor.startMonitoring();
         Log.d(TAG, "Monitoring started with " + (monitor.getBlockedApps() != null ? monitor.getBlockedApps().size() : 0) + " blocked apps");

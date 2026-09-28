@@ -5,7 +5,11 @@ package com.Break;
  *
  * <p><b>Flow:</b> {@link ReelsInterventionService} → {@link #onAccessibilityEvent} → omnibar probes
  * (view IDs → multi-root DFS) → deferred rescan → {@link #findBlockedDomain} →
- * {@link #redirect} (random benign URL, 2&nbsp;s cooldown).
+ * {@link #redirect} (random benign URL) plus {@link ContentFilterLockOverlay}
+ * (random 30–60&nbsp;s pause with rotating quotes).
+ *
+ * <p>Also blocks browser searches (Google and other major engines) whose query is porn,
+ * sex, or a porn-adjacent term. The reflection stores only the matched term, not the full query.
  *
  * <p>Log tag {@code BROWSER_WATCH}. Runs inside the unified {@link ReelsInterventionService}.
  */
@@ -69,17 +73,20 @@ public final class BrowserBarContentFilter {
     }
 
     private static final String[] REDIRECT_URL = {
-            "https://yt3.ggpht.com/m1oST1H1GY1ZCFmxjmbl7EM6tNtAsa8YA1wx5Z0c4JM7hOSS9_BKlQBa_6eyeQvjq4MxnX0YM7wvK9A=s736-c-fcrop64=1,00001960ffffe69f-rw-nd-v1",
-            "https://yt3.ggpht.com/Ik813-X8arGKfGD18QjODweB2YEJ7lUaVmRNVg2qNrzTiaDSmsu7TqmfyamDKnS-6jljjhaYXmxFm_8=s651-c-fcrop64=1,0ec80000f137ffff-rw-nd-v1",
-            "https://yt3.ggpht.com/QI1sYETg0XGjzbkgQ8HEwtejI7KX4t44IxpKjRrFeEi8hLHjMiiCDLB7G2PUciwSDGetWzNgJ7HdAA=s800-c-fcrop64=1,00000000ffffffff-rw-nd-v1",
-            "https://yt3.ggpht.com/wYTTW50sfgCQLhjc5pjlKsmZKsm1hYuowdoAE4Z7TMZT7nJTgtFaXFmIaPzqq7l56tdNOrlhn-48rQ=s736-c-fcrop64=1,00000000ffffffff-rw-nd-v1",
-            "https://i.pinimg.com/736x/68/38/ca/6838ca58711bf98c9488bdbd218850d2.jpg",
-            "https://i.pinimg.com/control1/1200x/b8/a8/59/b8a859bd535b0fe55eddf860a0629a05.jpg",
+            "https://yt3.ggpht.com/1AVT7OuCl24BF9ylQK7BoXXBR5AkPK1GOBnG8lTVvZIQqB7A-3_zaSrNrn1pefiA34MQZ3xTN0V5AA=s736-c-fcrop64=1,00002be3ffffd41c-rw-nd-v1",
+            "https://yt3.ggpht.com/PBxeWnLnO7Kt3EX-agap428XGQwC70Grx8JQj7CUipAJuuK_6vqYgVTpMbEK7ewoylZJuGiLNvjSaoA=s735-c-fcrop64=1,00000983fffff67c-rw-nd-v1",
+            "https://yt3.ggpht.com/Ii6HSyXeCk9KA-jhr-p0AU90P7jv6i5DlRql3xRBVlXwIuykU4aOMl2-aR9N85oD2-MvwC6XaQa_KQ=s736-c-fcrop64=1,00001ff8ffffe007-rw-nd-v1",
+
         };
 
-    private static final long REDIRECT_COOLDOWN_MS = 2000;
+    private static final long REDIRECT_COOLDOWN_MS = 1000;
     private static long lastRedirectTime = 0;
     private static final Random RANDOM = new Random();
+
+    /** Set by {@link ReelsInterventionService}; shown when a blocked domain is hit. */
+    private static ContentFilterLockOverlay lockOverlay;
+    /** True while waiting for the neutral browser activity to settle before attaching the gate. */
+    private static boolean lockOverlayPending;
 
     private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
     private static String deferredPollPackage;
@@ -91,19 +98,47 @@ public final class BrowserBarContentFilter {
     private static final int TREE_SCAN_MAX_NODES = 900;
 
     private static final Set<String> BLOCKED_DOMAINS = new HashSet<>(Arrays.asList(
-            "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com",
-            "redtube.com", "youporn.com", "tube8.com", "spankbang.com",
-            "beeg.com", "porn.com", "sex.com", "chaturbate.com",
-            "onlyfans.com", "stripchat.com", "bongacams.com", "myfreecams.com",
-            "cam4.com", "brazzers.com", "naughtyamerica.com", "bangbros.com",
-            "realitykings.com", "mofos.com", "digitalplayground.com", "evilangel.com",
-            "kink.com", "adulttime.com", "score.com", "hustler.com",
-            "playboy.com", "playboyplus.com", "livejasmin.com", "slutload.com",
-            "drtuber.com", "tnaflix.com", "hentaihaven.xxx", "nhentai.net",
-            "rule34.xxx", "gelbooru.com", "danbooru.donmai.us", "motherless.com",
-            "xtube.com", "gaytube.com", "pornmd.com", "txxx.com",
-            "porntube.com", "cliphunter.com", "empflix.com", "youjizz.com",
-            "jizzhut.com", "nuvid.com"));
+            "pornhub.com", "pornhub.org", "pornhub.net", "pornhubpremium.com", "phncdn.com",
+            "modelhub.com", "xvideos.com", "xvideos2.com", "xvideos.es", "xnxx.com", "xnxx.es",
+            "xhamster.com", "xhamster2.com", "xhamster.desi", "xhamster.one", "xhamsterlive.com",
+            "redtube.com", "youporn.com", "youporngay.com", "tube8.com", "spankbang.com",
+            "spankbang.party", "beeg.com", "porn.com", "sex.com", "eporner.com", "hqporner.com",
+            "porntrex.com", "porngo.com", "sxyprn.com", "sxyprn.net", "noodlemagazine.com",
+            "upornia.com", "hclips.com", "hdzog.com", "hotmovs.com", "4tube.com", "porndig.com",
+            "porn300.com", "perfectgirls.net", "perfectgirls.xxx", "fuq.com", "pornone.com",
+            "anysex.com", "sunporno.com", "hellporno.com", "pornhat.com", "yespornplease.com",
+            "ok.xxx", "yourporn.sexy", "vxxx.com", "vjav.com", "javhd.com", "jav.guru",
+            "missav.com", "supjav.com", "123av.com", "jable.tv", "avgle.com", "thisvid.com",
+            "xgroovy.com", "zbporn.com", "pornoxo.com", "3movs.com", "xxxbunker.com",
+            "keezmovies.com", "extremetube.com", "alohatube.com", "analdin.com", "pussyspace.com",
+            "whoreshub.com", "netfapx.com", "porndoe.com", "pornhd.com",
+            "chaturbate.com", "stripchat.com", "bongacams.com", "myfreecams.com", "cam4.com",
+            "camsoda.com", "jerkmate.com", "flirt4free.com", "streamate.com", "imlive.com",
+            "camster.com", "livejasmin.com", "onlyfans.com", "fansly.com", "fanvue.com",
+            "manyvids.com", "justfor.fans", "faphouse.com", "adultdvdempire.com",
+            "adultfriendfinder.com",
+            "brazzers.com", "naughtyamerica.com", "bangbros.com", "realitykings.com",
+            "mofos.com", "digitalplayground.com", "evilangel.com", "kink.com", "adulttime.com",
+            "teamskeet.com", "vixen.com", "blacked.com", "blackedraw.com", "tushy.com",
+            "tushyraw.com", "deeper.com", "slayed.com", "milfy.com", "puretaboo.com",
+            "twistys.com", "babes.com", "nubiles.com", "metart.com", "femjoy.com", "hegre.com",
+            "x-art.com", "sexart.com", "joymii.com", "score.com", "hustler.com",
+            "playboy.com", "playboyplus.com", "slutload.com",
+            "drtuber.com", "tnaflix.com", "empflix.com", "nuvid.com", "youjizz.com",
+            "jizzhut.com", "xtube.com", "gaytube.com", "pornmd.com", "txxx.com",
+            "porntube.com", "cliphunter.com", "motherless.com",
+            "imagefap.com", "pornpics.com", "erome.com", "redgifs.com", "fapello.com",
+            "coomer.party", "coomer.su", "kemono.party", "kemono.su", "simpcity.su",
+            "thothub.to", "thothub.lol", "scrolller.com", "nudostar.com",
+            "hentaihaven.xxx", "hentaihaven.com", "nhentai.net", "nhentai.to", "nhentai.xxx",
+            "hanime.tv", "hentai2read.com", "hentaifox.com", "hentaihere.com", "hentai.tv",
+            "simply-hentai.com", "9hentai.to", "e-hentai.org", "exhentai.org", "hitomi.la",
+            "rule34.xxx", "rule34.paheal.net", "gelbooru.com", "danbooru.donmai.us",
+            "e621.net", "e926.net", "furaffinity.net", "inkbunny.net", "luscious.net",
+            "fakku.net", "tsumino.com", "pururin.to", "multporn.net", "allporncomic.com",
+            "myhentaigallery.com",
+            "literotica.com", "chyoa.com", "sexstories.com", "lushstories.com", "asstr.org",
+            "reddit.com"));
 
     private static final Map<String, String[]> BROWSER_URL_IDS = new HashMap<>();
 
@@ -137,6 +172,14 @@ public final class BrowserBarContentFilter {
         return BROWSER_URL_IDS.containsKey(packageName);
     }
 
+    static void setLockOverlay(ContentFilterLockOverlay overlay) {
+        lockOverlay = overlay;
+    }
+
+    static boolean isLockShowing() {
+        return lockOverlayPending || (lockOverlay != null && lockOverlay.isShowing());
+    }
+
     /** Logs browser-filter readiness when {@link ReelsInterventionService} connects. */
     static void logBrowserFilterReady(AccessibilityService service) {
         Log.i(TAG,
@@ -153,6 +196,8 @@ public final class BrowserBarContentFilter {
     /** Called from {@link ReelsInterventionService#onAccessibilityEvent} for browser packages. */
     public static void onAccessibilityEvent(AccessibilityService host, AccessibilityEvent event) {
         if (event == null)
+            return;
+        if (isLockShowing())
             return;
         CharSequence pkg = event.getPackageName();
         if (pkg == null)
@@ -249,6 +294,10 @@ public final class BrowserBarContentFilter {
             Log.d(TAG, "[DEFERRED] skipped unknown pkg=" + pkg);
             return;
         }
+        if (isLockShowing()) {
+            Log.d(TAG, "[DEFERRED] skipped — content filter lock overlay is showing");
+            return;
+        }
 
         Log.d(TAG, "--- [DEFERRED] PEEK pkg=" + pkg + " ---");
         String url = sweepBrowserTreesForAddressBar(host, pkg, null);
@@ -275,9 +324,23 @@ public final class BrowserBarContentFilter {
             } else {
                 lastRedirectTime = now;
                 String target = REDIRECT_URL[RANDOM.nextInt(REDIRECT_URL.length)];
-                Log.i(TAG, "  [REDIRECT] blocked domain detected — replacing omnibar + redirecting target=" + target);
+                Log.i(TAG, "  [REDIRECT] blocked domain detected — reflection gate + redirect target=" + target);
                 tryClearBlockedOmnibar(host, browserPackageName, target);
                 redirectTo(host, target);
+                // Starting the neutral browser activity can race a WindowManager add. Attach the
+                // accessibility overlay after that activity transition so the editor is visible
+                // and focused above the final browser window.
+                if (lockOverlay != null && !lockOverlay.isShowing() && !lockOverlayPending) {
+                    lockOverlayPending = true;
+                    final String domainForGate = matchedDomain;
+                    MAIN_HANDLER.postDelayed(() -> {
+                        lockOverlayPending = false;
+                        ContentFilterLockOverlay overlay = lockOverlay;
+                        if (overlay != null && !overlay.isShowing()) {
+                            overlay.show(domainForGate, null);
+                        }
+                    }, 400L);
+                }
             }
         } else {
             Log.d(TAG, "  [MATCH] ALLOW (not on blocklist) parsedHost="
@@ -442,7 +505,10 @@ public final class BrowserBarContentFilter {
                             + " textSnippet="
                             + clipForLog(srcTxt != null ? srcTxt.toString() : "null", 100));
 
-                    String fromSource = readableUrlCandidateFromNode(source);
+                    // While the omnibar is focused, its accessibility tree includes live typing
+                    // and autocomplete suggestions. Those are intentions, not a committed page.
+                    String fromSource = source.isEditable() && source.isFocused()
+                            ? null : readableUrlCandidateFromNode(source);
                     Log.d(TAG, "  [SOURCE] urlLikeCandidate="
                             + (fromSource != null ? clipForLog(fromSource, 120) : "null"));
                     if (fromSource != null && hostFromBarText(fromSource) != null)
@@ -466,13 +532,7 @@ public final class BrowserBarContentFilter {
             for (AccessibilityNodeInfo root : roots) {
                 try {
                     String hit = probeRootForUrlCandidate(packageName, root);
-                    if (hit != null && hostFromBarText(hit) != null)
-                        return hit.trim();
-
-                    Log.d(TAG, "  [SWEEP] toolbar id MISS — DFS scan (budget maxNodes=" + TREE_SCAN_MAX_NODES
-                            + ")");
-                    hit = scanTreeForAddressLikeText(root);
-                    if (hit != null && hostFromBarText(hit) != null)
+                    if (hit != null && (hostFromBarText(hit) != null || BlockedSearch.isBareBlockedQuery(hit)))
                         return hit.trim();
                 } finally {
                     root.recycle();
@@ -480,12 +540,6 @@ public final class BrowserBarContentFilter {
             }
         } finally {
             roots.clear();
-        }
-
-        if (event != null) {
-            String fallback = tryEventTextAddressCandidates(event);
-            if (fallback != null)
-                return fallback;
         }
 
         Log.d(TAG, "  [SWEEP_END] MISS pkg=" + packageName);
@@ -505,6 +559,12 @@ public final class BrowserBarContentFilter {
                 continue;
             try {
                 for (AccessibilityNodeInfo node : nodes) {
+                    if (node == null)
+                        continue;
+                    if (node.isEditable() && node.isFocused()) {
+                        Log.d(TAG, "  [PROBE] ignoring focused omnibar while user is typing");
+                        continue;
+                    }
                     CharSequence text = node.getText();
                     CharSequence desc = node.getContentDescription();
                     Log.d(TAG, "  [PROBE]   candidate id=\"" + fullId + "\" text="
@@ -517,6 +577,10 @@ public final class BrowserBarContentFilter {
                         return fromText;
                     if (!fromDesc.isEmpty() && looksLikeAddressBarText(fromDesc))
                         return fromDesc;
+                    // Chrome sometimes shows the committed query in the omnibox instead of the URL.
+                    // Descriptions are skipped here so a page title cannot trip the filter.
+                    if (!fromText.isEmpty() && BlockedSearch.isBareBlockedQuery(fromText))
+                        return fromText;
                 }
             } finally {
                 for (AccessibilityNodeInfo node : nodes) {
@@ -642,8 +706,8 @@ public final class BrowserBarContentFilter {
     }
 
     /**
-     * Prefer parsed-host suffix matching; fall back to substring on the omnibar/raw string — same idea
-     * as legacy {@code contains(domain)} matching on the URL string before the reorg refactor.
+     * Matches a blocked hostname, or a search whose query is a restricted term.
+     * Page body text is never scanned.
      */
     private static String findBlockedDomain(String urlOrHost) {
         if (TextUtils.isEmpty(urlOrHost))
@@ -658,13 +722,7 @@ public final class BrowserBarContentFilter {
             }
         }
 
-        String lower = urlOrHost.trim().toLowerCase(Locale.US);
-        for (String domain : BLOCKED_DOMAINS) {
-            String dl = domain.toLowerCase(Locale.US);
-            if (lower.contains(dl))
-                return domain;
-        }
-        return null;
+        return BlockedSearch.match(urlOrHost);
     }
 
     private static void redirectTo(AccessibilityService host, String target) {

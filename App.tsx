@@ -10,9 +10,11 @@
 //
 // Deep linking: Break://browser/:platform → Browser screen (used by widget buttons)
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   NativeModules,
+  AppState,
+  Button,
   View,
   Text,
   ActivityIndicator,
@@ -24,6 +26,8 @@ import ModesScreen from './components/Modes/ModesScreen';
 import PermissionsScreen from './components/Permissions/PermissionsScreen';
 import { BrowserScreen } from './components/Browser/BrowserScreen';
 import AppDetail from './components/AppDetail/AppDetail';
+import ReflectionsScreen from './components/Reflections/ReflectionsScreen';
+import ReflectionDetailScreen from './components/Reflections/ReflectionDetailScreen';
 import {
   NavigationContainer,
   createNavigationContainerRef,
@@ -31,7 +35,9 @@ import {
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-const { VPNModule } = NativeModules;
+import { allGranted, parseSetup } from './components/Permissions/setupState';
+
+const { VPNModule, SettingsModule } = NativeModules;
 const Stack = createNativeStackNavigator();
 
 /**
@@ -60,7 +66,13 @@ const linking = {
  * Calls useUninstallLock unconditionally (satisfies React rules of hooks) and
  * intercepts the full screen when the 30-second delete delay is active.
  */
-const MainNavigator = () => {
+const MainNavigator = ({
+  onSetup,
+  canSetup,
+}: {
+  onSetup: () => Promise<void>;
+  canSetup: boolean;
+}) => {
   return (
     <SafeAreaProvider>
       <NavigationContainer ref={navigationRef} linking={linking}>
@@ -68,11 +80,20 @@ const MainNavigator = () => {
           screenOptions={{ headerShown: false }}
           initialRouteName="Home"
         >
-          <Stack.Screen name="Home" component={Home} />
+          <Stack.Screen name="Home">
+            {props => (
+              <Home {...props} onSetup={canSetup ? onSetup : undefined} />
+            )}
+          </Stack.Screen>
           <Stack.Screen name="Customize" component={Customize} />
           <Stack.Screen name="Modes" component={ModesScreen} />
           <Stack.Screen name="Browser" component={BrowserScreen} />
           <Stack.Screen name="AppDetail" component={AppDetail} />
+          <Stack.Screen name="Reflections" component={ReflectionsScreen} />
+          <Stack.Screen
+            name="ReflectionDetail"
+            component={ReflectionDetailScreen}
+          />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>
@@ -80,83 +101,89 @@ const MainNavigator = () => {
 };
 
 const App = () => {
-  // null = checking, false = missing, true = granted
-  const [permissionsGranted, setPermissionsGranted] = useState<boolean | null>(
-    null,
+  const [route, setRoute] = useState<'loading' | 'setup' | 'repair' | 'home'>(
+    'loading',
   );
-
-  // Check required permissions (usage stats + overlay) on mount
-  useEffect(() => {
-    console.log('[App] checking permissions');
-    VPNModule.checkPermissions()
-      .then(
-        (perms: {
-          usage: boolean;
-          overlay: boolean;
-          accessibility?: boolean;
-        }) => {
-          // Accessibility is gated here now that the native pre-RN gate
-          // (AccessibilityPermissionActivity) is no longer the launcher — the
-          // onboarding requests it as a step. Older native builds that don't
-          // report `accessibility` (undefined) are treated as granted so the
-          // gate doesn't get stuck.
-          const accessibilityOk = perms.accessibility !== false;
-          const granted = perms.usage && perms.overlay && accessibilityOk;
-          console.log(
-            '[App] permissions result — usage:',
-            perms.usage,
-            'overlay:',
-            perms.overlay,
-            'accessibility:',
-            perms.accessibility,
-            '→ granted:',
-            granted,
-          );
-          setPermissionsGranted(granted);
-        },
-      )
-      .catch((e: Error) => {
-        console.error('[App] checkPermissions failed:', e);
-        setPermissionsGranted(false);
-      });
+  const [setup, setSetup] = useState<any>(null);
+  const [error, setError] = useState('');
+  const checking = useRef(false);
+  const refresh = useCallback(async () => {
+    if (checking.current) return;
+    checking.current = true;
+    setError('');
+    try {
+      const state = parseSetup(await SettingsModule.getOnboardingState());
+      setSetup(state);
+      if (!state.completed) {
+        setRoute('setup');
+      } else if (
+        state.requiresPermissions &&
+        !allGranted(await VPNModule.checkPermissions())
+      ) {
+        setRoute('repair');
+      } else {
+        setRoute('home');
+      }
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Could not load setup. Please retry.',
+      );
+    } finally {
+      checking.current = false;
+    }
   }, []);
-
-  // Permission check in flight — show a branded splash so the first frame
-  // isn't a black screen flash. The check usually resolves in <100ms.
-  if (permissionsGranted === null) {
-    console.log('[App] permission check in progress — rendering splash');
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      // The setup/repair screen owns its Settings round trip and success screen.
+      if (state === 'active' && route === 'home') refresh();
+    });
+    return () => sub.remove();
+  }, [refresh, route]);
+  const beginSetup = async () => {
+    const state = parseSetup(await SettingsModule.beginAppSetup());
+    setSetup(state);
+    setRoute('setup');
+  };
+  if (error || route === 'loading') {
     return (
       <View style={splashStyles.container}>
         <Text style={splashStyles.wordmark}>Break</Text>
-        <ActivityIndicator
-          size="small"
-          color="#757575"
-          style={splashStyles.spinner}
-        />
+        {error ? (
+          <>
+            <Text accessibilityRole="alert">{error}</Text>
+            <Button title="Retry" onPress={refresh} />
+          </>
+        ) : (
+          <ActivityIndicator
+            size="small"
+            color="#757575"
+            style={splashStyles.spinner}
+          />
+        )}
       </View>
     );
   }
-
-  // Permissions missing — show the onboarding/permission request flow
-  if (!permissionsGranted) {
-    console.log('[App] permissions not granted — showing PermissionsScreen');
+  if (route === 'setup' || route === 'repair') {
     return (
       <SafeAreaProvider>
         <PermissionsScreen
-          onComplete={() => {
-            console.log(
-              '[App] PermissionsScreen complete — permissions granted',
-            );
-            setPermissionsGranted(true);
-          }}
+          key={route}
+          initialState={setup}
+          repair={route === 'repair'}
+          onComplete={refresh}
         />
       </SafeAreaProvider>
     );
   }
-
-  // All permissions granted — show the main app (lock routing handled inside)
-  console.log('[App] permissions granted — rendering main navigator');
-  return <MainNavigator />;
+  return (
+    <MainNavigator
+      onSetup={beginSetup}
+      canSetup={!setup.legacy && setup.selections.length === 0}
+    />
+  );
 };
 
 const splashStyles = StyleSheet.create({

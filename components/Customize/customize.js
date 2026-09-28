@@ -43,6 +43,9 @@ import InfoCircle from '../shared/InfoCircle';
 import { formatRemaining, GUARD_STATES } from '../shared/lockCycle';
 import ScrollBudgetSection from './ScrollBudgetSection';
 import DeletionInfoModal from './DeletionInfoModal';
+import DeletionDisablePauseModal from './DeletionDisablePauseModal';
+import ContentFilterDoubleSafeModal from './ContentFilterDoubleSafeModal';
+import ContentFilterBothLayersModal from './ContentFilterBothLayersModal';
 import { styles, L } from './customize.styles';
 
 // Debounce window for Customize writes. Rapid toggles coalesce into a single
@@ -89,6 +92,10 @@ const Customize = ({ navigation }) => {
   // Confirmation modal shown before enabling deletion prevention, so the user
   // reads what it does, its limitations, and the privacy guarantee first.
   const [deletionInfoVisible, setDeletionInfoVisible] = useState(false);
+  // Pause modal shown before turning deletion prevention OFF. It requires a
+  // continuous five-minute foreground countdown before confirm is enabled.
+  const [deletionDisablePauseVisible, setDeletionDisablePauseVisible] =
+    useState(false);
 
   // ── Scroll budget state ───────────────────────────────────────────────────
   const [scrollAllowance, setScrollAllowance] = useState(5);
@@ -109,10 +116,13 @@ const Customize = ({ navigation }) => {
   const settingsLock = useSettingsLock('global', navigation);
   const { markDirty: markSettingsDirty } = settingsLock;
 
-  // Content-filter double-safe guard: opt-in two-step disable for the browser
-  // content filter (disable → wait a full lock duration → confirm window →
-  // disable again). See useContentFilterGuard / ContentFilterGuard.java.
+  // Content-filter double-safe guard: two-layer protection for the browser
+  // content filter. See useContentFilterGuard / ContentFilterGuard.java.
   const cfGuard = useContentFilterGuard(navigation);
+  // Modal shown before enabling Double-safe (explains the two-step commitment).
+  const [cfDoubleSafeModalVisible, setCfDoubleSafeModalVisible] = useState(false);
+  // Modal shown when the user taps content filter OFF while Double-safe is on.
+  const [cfBothLayersModalVisible, setCfBothLayersModalVisible] = useState(false);
 
   // Called every time the user taps a toggle that gets scheduled.
   // Keeps the pill visible ("Saving…") until the commit fires.
@@ -322,13 +332,10 @@ const Customize = ({ navigation }) => {
 
   const handleContentFilterToggle = useCallback(
     async value => {
-      // Double-safe guard on + turning OFF → this tap is disable #1 of two.
-      // The filter STAYS ACTIVE; a full lock-duration wait starts, then a
-      // confirm window in which disable #2 actually turns it off.
       if (!value && cfGuard.doubleSafeEnabled) {
-        console.log('[Customize] content_filter disable → routed to guard');
-        const ok = await cfGuard.requestDisable();
-        if (ok) showSaved();
+        // Double-safe is still on — can't remove both layers at once.
+        console.log('[Customize] content_filter disable blocked — showing both-layers modal');
+        setCfBothLayersModalVisible(true);
         return;
       }
       setContentFilterEnabled(value);
@@ -336,9 +343,7 @@ const Customize = ({ navigation }) => {
       try {
         await SettingsModule.saveContentFilterEnabled(value);
         showSaved();
-        // Re-enabling also clears any pending two-step disable natively.
         cfGuard.refresh();
-        // After enabling, re-check whether the accessibility service is active
         if (value) {
           SettingsModule.isContentFilterServiceEnabled(active => {
             setAccessibilityServiceActive(active);
@@ -346,21 +351,43 @@ const Customize = ({ navigation }) => {
         }
       } catch (e) {
         console.warn('[Customize] saveContentFilterEnabled error:', e);
+        // Native refused (e.g. still in LAYER_OFF_WAIT) — revert optimistic update.
+        cfGuard.refresh();
+        setContentFilterEnabled(cfGuard.filterEnabled);
       }
     },
     [showSaved, cfGuard],
   );
 
-  // Opt-in/out of the double-safe guard. Turning it OFF is refused natively
-  // while a pending disable is in flight (that would shortcut the wait).
+  // Turning Double-safe ON: open info modal first so the user understands the
+  // two-step commitment before the feature activates.
+  // Turning Double-safe OFF: immediately starts the lock-duration wait natively;
+  // no extra confirmation needed (native handles the guard).
   const handleDoubleSafeToggle = useCallback(
     async value => {
-      console.log('[Customize] cf double-safe toggled →', value);
-      const ok = await cfGuard.setDoubleSafe(value);
+      if (value) {
+        console.log('[Customize] cf double-safe enable requested — showing info modal');
+        setCfDoubleSafeModalVisible(true);
+        return;
+      }
+      console.log('[Customize] cf double-safe toggled → false');
+      const ok = await cfGuard.setDoubleSafe(false);
       if (ok) showSaved();
     },
     [cfGuard, showSaved],
   );
+
+  const handleCfDoubleSafeConfirm = useCallback(async () => {
+    console.log('[Customize] cf double-safe modal confirmed — enabling');
+    setCfDoubleSafeModalVisible(false);
+    const ok = await cfGuard.setDoubleSafe(true);
+    if (ok) showSaved();
+  }, [cfGuard, showSaved]);
+
+  const handleCfDoubleSafeCancel = useCallback(() => {
+    console.log('[Customize] cf double-safe modal cancelled');
+    setCfDoubleSafeModalVisible(false);
+  }, []);
 
   // Persist the deletion-prevention flag. Extracted so both the confirm-modal
   // "Enable" action and the direct "turn off" path share one write.
@@ -380,7 +407,8 @@ const Customize = ({ navigation }) => {
 
   const handleUninstallLockToggle = useCallback(
     value => {
-      // Turning on requires reading the info modal first; turning off is direct.
+      // Turning on requires reading the info modal first.
+      // Turning off opens a five-minute foreground pause — no direct disable.
       if (value) {
         console.log(
           '[Customize] uninstall_lock enable requested — showing info',
@@ -388,9 +416,12 @@ const Customize = ({ navigation }) => {
         setDeletionInfoVisible(true);
         return;
       }
-      saveUninstallLock(false);
+      console.log(
+        '[Customize] uninstall_lock disable requested — showing pause',
+      );
+      setDeletionDisablePauseVisible(true);
     },
-    [saveUninstallLock],
+    [],
   );
 
   const handleDeletionInfoConfirm = useCallback(() => {
@@ -403,6 +434,27 @@ const Customize = ({ navigation }) => {
     console.log('[Customize] deletion-prevention info cancelled');
     setDeletionInfoVisible(false);
   }, []);
+
+  const handleDeletionDisablePauseConfirm = useCallback(() => {
+    console.log(
+      '[Customize] deletion-prevention disable confirmed after 5-minute pause',
+    );
+    setDeletionDisablePauseVisible(false);
+    saveUninstallLock(false);
+  }, [saveUninstallLock]);
+
+  const handleDeletionDisablePauseCancel = useCallback(() => {
+    console.log('[Customize] deletion-prevention disable cancelled — keeping on');
+    setDeletionDisablePauseVisible(false);
+  }, []);
+
+  // Human-readable Settings Change Lock duration for modal copy.
+  const lockDurationLabel = (() => {
+    const h = Math.round((settingsLock.durationMs || 0) / (60 * 60 * 1000)) || 24;
+    if (h < 48) return `${h}h`;
+    if (h < 168) return `${Math.round(h / 24)}d`;
+    return '1wk';
+  })();
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -458,64 +510,79 @@ const Customize = ({ navigation }) => {
                 setPreviewVisible(true);
               }}
             /> */}
-            {/* ── Browser Content Filter ───────────────────────────────── */}
+            {/* ── Browser Content Filter ───────────────────────────── */}
             <View style={styles.section}>
               <Text style={styles.sectionLabel}>Browser Safety</Text>
 
-              <View style={styles.toggleRow}>
+              {/* Content filter switch — grayed out during LAYER_OFF_WAIT */}
+              <View
+                style={[
+                  styles.toggleRow,
+                  cfGuard.state === GUARD_STATES.LAYER_OFF_WAIT && { opacity: 0.45 },
+                ]}
+              >
                 <View style={styles.toggleLabelGroup}>
                   <Text style={styles.toggleLabel}>Content filter</Text>
-                  <Text style={styles.toggleCaption}>
-                    Blocks listed domains in Chrome and other browsers. Requires
-                    the Break accessibility service (one toggle in system
-                    settings).
-                  </Text>
+                  {cfGuard.state === GUARD_STATES.LAYER_OFF_WAIT ? (
+                    <Text style={styles.toggleCaption}>
+                      Locked — available in{' '}
+                      {formatRemaining(cfGuard.waitRemainingMs)} (Settings
+                      Change Lock wait is running).
+                    </Text>
+                  ) : cfGuard.state === GUARD_STATES.TEMP_OFF ? (
+                    <Text style={styles.toggleCaption}>
+                      Off for now — turns back on automatically in{' '}
+                      {formatRemaining(cfGuard.autoOnRemainingMs)}.
+                    </Text>
+                  ) : (
+                    <Text style={styles.toggleCaption}>
+                      Blocks listed domains in Chrome and other browsers.
+                      Requires the Break accessibility service (one toggle in
+                      system settings).
+                    </Text>
+                  )}
                 </View>
                 <Switch
                   value={contentFilterEnabled}
                   onValueChange={handleContentFilterToggle}
+                  disabled={cfGuard.state === GUARD_STATES.LAYER_OFF_WAIT}
                   trackColor={{ false: L.border, true: L.charcoal }}
                   thumbColor="#FFFFFF"
                   accessibilityLabel="Browser content filter"
                 />
               </View>
 
-              {/* Double-safe disable: opt-in second barrier on the filter. */}
+              {/* Double-safe: two-layer protection for the content filter. */}
               <View style={styles.toggleRow}>
                 <View style={styles.toggleLabelGroup}>
                   <View style={styles.labelWithInfo}>
-                    <Text style={styles.toggleLabel}>Double-safe disable</Text>
-                    <InfoCircle title="How Double-safe disable works">
+                    <Text style={styles.toggleLabel}>Double-safe</Text>
+                    <InfoCircle title="How Double-safe works">
                       <Text style={styles.infoPara}>
-                        With this on, turning the content filter off takes two
-                        deliberate steps instead of one tap.
+                        With Double-safe on, you can't turn the content filter
+                        off in one tap. There are two separate steps with a
+                        built-in wait between them.
                       </Text>
                       <Text style={styles.infoPara}>
-                        Step 1 — flip the filter off once. Nothing turns off
-                        yet: the filter keeps protecting you while a full lock
-                        timer runs (your Settings Change Lock duration).
+                        Step 1 — turn Double-safe off. The content filter stays
+                        fully on while a wait equal to your Settings Change Lock
+                        duration ({lockDurationLabel}) runs. The filter switch
+                        is grayed out for the entire wait.
                       </Text>
                       <Text style={styles.infoPara}>
-                        Step 2 — when the timer ends, a short confirm window
-                        opens. Confirm the disable there and the filter actually
-                        turns off.
+                        Step 2 — once the wait ends, turn the content filter
+                        off. It stays off for 12 hours, then re-enables itself
+                        automatically.
                       </Text>
                       <Text style={styles.infoPara}>
-                        If you let the confirm window pass without confirming,
-                        the pending disable is discarded and full protection
-                        re-instates automatically. The confirm window is 4 hours.
-                      </Text>
-                      <Text style={styles.infoPara}>
-                        You can cancel a pending disable at any time, and
-                        re-enabling the filter is always instant. This toggle
-                        itself can’t be turned off while a disable is pending.
+                        You cannot remove both layers in the same session — the
+                        waits must happen in sequence.
                       </Text>
                     </InfoCircle>
                   </View>
                   <Text style={styles.toggleCaption}>
-                    Turning the filter off requires two waits: one full lock
-                    timer, then a final confirmation. Protection re-arms itself
-                    if you don’t follow through.
+                    Turning the filter off requires a {lockDurationLabel} wait,
+                    then the filter auto-restores after 12 hours.
                   </Text>
                 </View>
                 <Switch
@@ -523,7 +590,7 @@ const Customize = ({ navigation }) => {
                   onValueChange={handleDoubleSafeToggle}
                   trackColor={{ false: L.border, true: L.charcoal }}
                   thumbColor="#FFFFFF"
-                  accessibilityLabel="Double-safe disable for content filter"
+                  accessibilityLabel="Double-safe for content filter"
                 />
               </View>
 
@@ -576,68 +643,44 @@ const Customize = ({ navigation }) => {
           </>
         )}
 
-        {/* ── Content-filter guard status ──────────────────────────────
-            Rendered OUTSIDE the SettingsLockGate on purpose: if the global
-            scope re-locks while a two-step disable is waiting, the user must
-            still be able to see the countdown and confirm/cancel — otherwise
-            the confirm window could never be reached. */}
-        {(cfGuard.state === GUARD_STATES.PENDING_WAIT ||
-          cfGuard.state === GUARD_STATES.CONFIRM_WINDOW) && (
+        {/* ── Content-filter guard status ───────────────────────────
+            Rendered OUTSIDE the SettingsLockGate: if the global scope re-locks
+            while a wait is running the user must still see countdowns. No
+            actions are needed here — all interactions live on the switches. */}
+        {cfGuard.state === GUARD_STATES.LAYER_OFF_WAIT && (
           <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Content Filter — Pending</Text>
-
-            {cfGuard.state === GUARD_STATES.PENDING_WAIT ? (
-              <Text style={styles.guardStatusText}>
-                First barrier removed. The filter is still protecting you — the
-                final disable unlocks in{' '}
-                <Text style={styles.guardStatusStrong}>
-                  {formatRemaining(cfGuard.waitRemainingMs)}
-                </Text>
-                .
+            <Text style={styles.sectionLabel}>Browser Safety — Wait Running</Text>
+            <Text style={styles.guardStatusText}>
+              Double-safe is off. The content filter stays on while your
+              Settings Change Lock duration runs. Filter available in{' '}
+              <Text style={styles.guardStatusStrong}>
+                {formatRemaining(cfGuard.waitRemainingMs)}
               </Text>
-            ) : (
-              <Text style={styles.guardStatusWarn}>
-                Confirm window open: disable the filter for good within{' '}
-                <Text style={styles.guardStatusStrong}>
-                  {formatRemaining(cfGuard.confirmRemainingMs)}
-                </Text>{' '}
-                — or protection re-arms automatically.
-              </Text>
-            )}
+              .
+            </Text>
+          </View>
+        )}
 
-            <View style={styles.guardButtonRow}>
-              {cfGuard.state === GUARD_STATES.CONFIRM_WINDOW && (
-                <TouchableOpacity
-                  style={styles.guardConfirmButton}
-                  activeOpacity={0.8}
-                  accessibilityRole="button"
-                  accessibilityLabel="Confirm content filter disable"
-                  onPress={async () => {
-                    console.log('[Customize] cf guard confirm tapped');
-                    const ok = await cfGuard.confirmDisable();
-                    if (ok) {
-                      setContentFilterEnabled(false);
-                      showSaved();
-                    }
-                  }}
-                >
-                  <Text style={styles.guardConfirmText}>Disable filter</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity
-                style={styles.guardCancelButton}
-                activeOpacity={0.7}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel pending content filter disable"
-                onPress={async () => {
-                  console.log('[Customize] cf guard cancel tapped');
-                  const ok = await cfGuard.cancelDisable();
-                  if (ok) showSaved();
-                }}
-              >
-                <Text style={styles.guardCancelText}>Keep protection</Text>
-              </TouchableOpacity>
-            </View>
+        {cfGuard.state === GUARD_STATES.LAYER_OFF_READY && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Browser Safety — Ready</Text>
+            <Text style={styles.guardStatusText}>
+              The wait is done. You can now turn the content filter off. It
+              will stay off for 12 hours, then turn itself back on.
+            </Text>
+          </View>
+        )}
+
+        {cfGuard.state === GUARD_STATES.TEMP_OFF && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Browser Safety — Temporarily Off</Text>
+            <Text style={styles.guardStatusWarn}>
+              Content filter is off. It turns back on automatically in{' '}
+              <Text style={styles.guardStatusStrong}>
+                {formatRemaining(cfGuard.autoOnRemainingMs)}
+              </Text>
+              . You can re-enable it earlier using the switch above.
+            </Text>
           </View>
         )}
 
@@ -657,6 +700,7 @@ const Customize = ({ navigation }) => {
             <Switch
               value={uninstallLockEnabled}
               onValueChange={handleUninstallLockToggle}
+              disabled={deletionDisablePauseVisible}
               trackColor={{ false: L.border, true: L.charcoal }}
               thumbColor="#FFFFFF"
               accessibilityLabel="Prevent deletion"
@@ -676,11 +720,33 @@ const Customize = ({ navigation }) => {
         <Text style={styles.savedToastText}>{savedLabel}</Text>
       </Animated.View>
 
+      {/* ── Content-filter Double-safe enable modal ─────────────────── */}
+      <ContentFilterDoubleSafeModal
+        visible={cfDoubleSafeModalVisible}
+        lockDurationLabel={lockDurationLabel}
+        onCancel={handleCfDoubleSafeCancel}
+        onConfirm={handleCfDoubleSafeConfirm}
+      />
+
+      {/* ── Content-filter both-layers-at-once modal ─────────────────── */}
+      <ContentFilterBothLayersModal
+        visible={cfBothLayersModalVisible}
+        lockDurationLabel={lockDurationLabel}
+        onDismiss={() => setCfBothLayersModalVisible(false)}
+      />
+
       {/* ── Deletion-prevention info modal ───────────────────────────── */}
       <DeletionInfoModal
         visible={deletionInfoVisible}
         onCancel={handleDeletionInfoCancel}
         onConfirm={handleDeletionInfoConfirm}
+      />
+
+      {/* ── Deletion-prevention disable pause (5-minute foreground wait) ── */}
+      <DeletionDisablePauseModal
+        visible={deletionDisablePauseVisible}
+        onCancel={handleDeletionDisablePauseCancel}
+        onConfirm={handleDeletionDisablePauseConfirm}
       />
     </View>
   );

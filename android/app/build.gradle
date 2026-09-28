@@ -132,4 +132,8 @@ dependencies {
     // Local JVM unit tests (com.Break.coach.* verdict logic — no Android deps).
     // Run with: ./gradlew :app:testDebugUnitTest
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    implementation("androidx.room:room-runtime:2.6.1")
+    annotationProcessor("androidx.room:room-compiler:2.6.1")
+    androidTestImplementation("androidx.room:room-testing:2.6.1")
 }

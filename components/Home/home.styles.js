@@ -45,7 +45,7 @@ export const styles = StyleSheet.create({
     paddingHorizontal: 28,
   },
   headerSpacer: {
-    width: 76,
+    width: 112,
   },
   appName: {
     fontSize: 13,

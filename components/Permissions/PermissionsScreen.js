@@ -1,600 +1,554 @@
-/**
- * PermissionsScreen.js
- * ─────────────────────────────────────────────────────────────────────────────
- * Break first-run onboarding — 9 screens, implemented from the
- * "Break Onboarding" handoff design (claude.ai/design):
- *
- *   0 — Welcome              ("Stay intentional")
- *   1 — Apps to manage       (multi-select, smart defaults)
- *   2 — Intercept message    (presets + write-your-own, live preview)
- *   3 — Per-app breath        (on/off + 5/15/30s per selected app)
- *   4 — Permission · Accessibility       (required, no skip)
- *   5 — Permission · Usage Access        (required, no skip)
- *   6 — Permission · Display Over Apps   (required, no skip)
- *   7 — Prevent deletion     (optional opt-in, skippable)
- *   8 — Done                 ("You're all set")
- *
- * Friction is removed via pre-selected apps, reversible choices, and a single
- * step-counter. The three permission screens are mandatory: there is no skip,
- * and each only advances once the permission is actually granted (verified on
- * foreground return). Privacy is reassured on every permission screen and the
- * final summary — Break collects no data at all.
- *
- * Selections are persisted and monitoring is started in `handleComplete()`.
- * The `onComplete` contract is unchanged from the previous implementation, so
- * App.tsx integration needs no edits.
- *
- * Logging prefix: [PermissionsScreen]
- */
-
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TextInput,
-  AppState,
-  NativeModules,
-  SafeAreaView,
+  AccessibilityInfo,
+  ActivityIndicator,
   Animated,
+  AppState,
+  BackHandler,
+  KeyboardAvoidingView,
+  NativeModules,
+  Platform,
+  ScrollView,
+  Text,
+  TextInput,
   TouchableOpacity,
+  View,
 } from 'react-native';
-import { ShieldIcon, CheckIcon } from './onboarding/icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  PillButton,
-  Eyebrow,
-  StepHeader,
-  ProgressDots,
-  ReassuranceCard,
   AppSelectRow,
-  Monogram,
-  Toggle,
+  PillButton,
+  ProgressDots,
   Segmented,
+  StepHeader,
+  Toggle,
 } from './onboarding/components';
+import { T } from './onboarding/theme';
+import { styles } from './PermissionsScreen.styles';
 import {
-  T,
-  ONBOARDING_APPS,
-  DEFAULT_SELECTED,
+  CATALOG_PACKAGES,
+  useInstalledApps,
+} from '../managedApps/installedApps';
+import { MANAGED_APPS } from '../managedApps/manifest';
+import {
+  allGranted,
+  checkPermissions,
+  EMPTY_DRAFT,
   MESSAGE_PRESETS,
-  BREATH_DURATIONS,
-  DEFAULT_BREATH,
-  BREATH_FALLBACK,
-} from './onboarding/theme';
-import { PERMISSION_STEPS } from './permissionSteps';
-import { styles, strongStyle } from './PermissionsScreen.styles';
+  parseSetup,
+  previousStep,
+} from './setupState';
+import PermissionPanel from './PermissionPanel';
+import DeletionInfoModal from '../Customize/DeletionInfoModal';
 
-const { VPNModule, SettingsModule } = NativeModules;
+const { SettingsModule, VPNModule } = NativeModules;
 
-const TOTAL_STEPS = 9;
-const FIRST_PERMISSION_STEP = 4;
-// Optional deletion-prevention opt-in, shown after the required permissions
-// (it relies on the accessibility service granted at step 4) and before Done.
-const PROTECT_STEP = 7;
+export default function PermissionsScreen({
+  initialState = EMPTY_DRAFT,
+  repair = false,
+  onComplete,
+}) {
+  const [draft, setDraft] = useState(initialState);
+  const draftRef = useRef(draft);
+  const [permissions, setPermissions] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const working = useRef(false);
+  const queue = useRef(Promise.resolve());
+  const [custom, setCustom] = useState(
+    !MESSAGE_PRESETS.includes(draft.reminder),
+  );
+  const [consent, setConsent] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(true);
+  const opacity = useRef(new Animated.Value(1)).current;
+  const installed = useInstalledApps();
+  const step = repair ? 3 : draft.step;
+  const hasApps = draft.selections.length > 0;
 
-/**
- * Merge native permission checks into a single map. checkPermissions() returns
- * { usage, overlay } and, on builds with the native accessibility addition,
- * { accessibility }. We fall back to SettingsModule.isContentFilterServiceEnabled
- * for the accessibility flag so the flow works against older native builds too.
- *
- * @returns {Promise<{usage:boolean, overlay:boolean, accessibility:boolean}>}
- */
-async function checkAllPermissions() {
-  const perms = await VPNModule.checkPermissions();
-  let accessibility = perms.accessibility;
-  if (typeof accessibility !== 'boolean') {
-    accessibility = await new Promise(resolve => {
+  const edit = useCallback(patch => {
+    const next = { ...draftRef.current, ...patch };
+    draftRef.current = next;
+    setDraft(next);
+    return next;
+  }, []);
+  // Serialize background saves with navigation/activation so stale writes cannot win.
+  const persist = useCallback(next => {
+    const result = queue.current
+      .catch(() => {})
+      .then(() => SettingsModule.saveOnboardingDraft(JSON.stringify(next)));
+    queue.current = result;
+    return result;
+  }, []);
+  const go = useCallback(
+    async nextStep => {
+      if (working.current) return;
+      working.current = true;
+      setBusy(true);
+      setError('');
       try {
-        SettingsModule.isContentFilterServiceEnabled(enabled =>
-          resolve(!!enabled),
-        );
+        const next = { ...draftRef.current, step: nextStep };
+        await persist(next);
+        edit(next);
       } catch (e) {
-        resolve(false);
+        setError(e.message || 'Could not save your choices. Please retry.');
+      } finally {
+        working.current = false;
+        setBusy(false);
       }
-    });
-  }
-  return { usage: !!perms.usage, overlay: !!perms.overlay, accessibility };
-}
+    },
+    [edit, persist],
+  );
 
-export default function PermissionsScreen({ onComplete }) {
-  const [step, setStep] = useState(0);
-  const [selectedApps, setSelectedApps] = useState(DEFAULT_SELECTED);
-  const [message, setMessage] = useState(MESSAGE_PRESETS[0]);
-  const [customMode, setCustomMode] = useState(false);
-  const [customText, setCustomText] = useState('');
-  const [breath, setBreath] = useState(() => ({ ...DEFAULT_BREATH }));
-  const [protectEnabled, setProtectEnabled] = useState(false);
-
-  const appStateRef = useRef(AppState.currentState);
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(16)).current;
-
-  // ── Entrance animation on each step change ─────────────────────────────────
   useEffect(() => {
-    fadeAnim.setValue(0);
-    slideAnim.setValue(16);
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 360,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 360,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [step, fadeAnim, slideAnim]);
-
-  // ── Auto-advance permission steps once the permission is actually granted ──
+    if (repair || draft.completed) return undefined;
+    const timer = setTimeout(() => {
+      if (!working.current)
+        persist(draftRef.current).catch(e => setError(e.message));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [draft, persist, repair]);
   useEffect(() => {
-    const sub = AppState.addEventListener('change', async nextState => {
-      const wasBackground = appStateRef.current.match(/inactive|background/);
-      appStateRef.current = nextState;
-      if (!(wasBackground && nextState === 'active')) {
-        return;
-      }
+    const sub = AppState.addEventListener('change', state => {
       if (
-        step < FIRST_PERMISSION_STEP ||
-        step >= FIRST_PERMISSION_STEP + PERMISSION_STEPS.length
+        state !== 'active' &&
+        !repair &&
+        !draftRef.current.completed &&
+        !working.current
       ) {
-        return;
-      }
-      const config = PERMISSION_STEPS[step - FIRST_PERMISSION_STEP];
-      try {
-        const perms = await checkAllPermissions();
-        console.log(
-          '[PermissionsScreen] foreground re-check:',
-          JSON.stringify(perms),
-        );
-        if (perms[config.permKey]) {
-          console.log(
-            '[PermissionsScreen] granted:',
-            config.permKey,
-            '→ advancing',
-          );
-          setStep(s => s + 1);
-        }
-      } catch (e) {
-        console.warn('[PermissionsScreen] permission re-check failed:', e);
+        persist(draftRef.current).catch(e => setError(e.message));
       }
     });
     return () => sub.remove();
-  }, [step]);
-
-  // ── State helpers ──────────────────────────────────────────────────────────
-  const toggleApp = pkg => {
-    setSelectedApps(prev => {
-      if (prev.includes(pkg)) {
-        return prev.filter(p => p !== pkg);
-      }
-      // Seed a breath default for newly selected apps that lack one.
-      setBreath(b => (b[pkg] ? b : { ...b, [pkg]: { ...BREATH_FALLBACK } }));
-      return [...prev, pkg];
+  }, [persist, repair]);
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then(setReducedMotion)
+      .catch(() => {});
+    const sub = AccessibilityInfo.addEventListener(
+      'reduceMotionChanged',
+      setReducedMotion,
+    );
+    return () => sub.remove();
+  }, []);
+  useEffect(() => {
+    opacity.setValue(reducedMotion ? 1 : 0);
+    const animation = Animated.timing(opacity, {
+      toValue: 1,
+      duration: reducedMotion ? 0 : 160,
+      useNativeDriver: true,
     });
-  };
-
-  const setBreathOn = (pkg, on) =>
-    setBreath(b => ({ ...b, [pkg]: { ...(b[pkg] || BREATH_FALLBACK), on } }));
-  const setBreathSecs = (pkg, secs) =>
-    setBreath(b => ({
-      ...b,
-      [pkg]: { ...(b[pkg] || BREATH_FALLBACK), secs, on: true },
-    }));
-
-  const chooseMessage = preset => {
-    setCustomMode(false);
-    setMessage(preset);
-  };
-  const enableCustom = () => {
-    setCustomMode(true);
-    setMessage(customText);
-  };
-  const onCustomChange = text => {
-    setCustomText(text);
-    setMessage(text);
-  };
-
-  const next = () => setStep(s => Math.min(s + 1, TOTAL_STEPS - 1));
-  const back = () => setStep(s => Math.max(s - 1, 0));
-
-  // ── Permission CTA — open the relevant system settings screen ──────────────
-  const requestPermission = async config => {
-    try {
-      console.log('[PermissionsScreen] requesting permission:', config.permKey);
-      await config.request();
-    } catch (e) {
-      console.warn('[PermissionsScreen] permission request failed:', e);
-    }
-  };
-
-  // ── Persist everything and start monitoring ────────────────────────────────
-  const handleComplete = async () => {
-    console.log('[PermissionsScreen] handleComplete — persisting selections');
-    const finalMessage = (message || '').trim() || MESSAGE_PRESETS[0];
-    try {
-      await VPNModule.setBlockedApps(selectedApps);
-      await VPNModule.setDelayMessage(finalMessage);
-      for (const pkg of selectedApps) {
-        const cfg = breath[pkg] || BREATH_FALLBACK;
-        const delaySecs = cfg.on ? cfg.secs : 0;
-        // popupDelayMin left at 0 — breath pause only, no follow-up popup.
-        await SettingsModule.setAppInterceptSettings(
-          pkg,
-          finalMessage,
-          delaySecs,
-          0,
-        );
-      }
-      await VPNModule.startMonitoring();
-      SettingsModule.saveMonitoringEnabled(true);
-      SettingsModule.saveUninstallLockEnabled(protectEnabled);
-      console.log(
-        '[PermissionsScreen] setup persisted, monitoring started, deletion-prevention=',
-        protectEnabled,
-      );
-    } catch (e) {
-      console.warn('[PermissionsScreen] persist/start failed (non-fatal):', e);
-    }
-    onComplete();
-  };
-
-  // ── Per-step renderers ─────────────────────────────────────────────────────
-  const renderWelcome = () => (
-    <View style={styles.centered}>
-      <ShieldIcon size={56} color={T.ink} strokeWidth={1.4} />
-      <Text style={styles.welcomeTitle}>Stay intentional</Text>
-      <Text style={styles.welcomeBody}>
-        Break helps you reclaim your time by pausing mindless scrolling.
-      </Text>
-      <View style={styles.welcomeFooter}>
-        <ProgressDots total={4} active={0} />
-        <PillButton label="Get started" onPress={next} />
-      </View>
-    </View>
-  );
-
-  const renderApps = () => (
-    <View style={styles.flex}>
-      <StepHeader onBack={back} stepLabel="Step 1 of 3" />
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollBody}
-      >
-        <Text style={styles.h2}>What pulls you in?</Text>
-        <Text style={styles.p}>
-          We picked a few for you. Tap to change — nothing is permanent.
-        </Text>
-        <View style={styles.appList}>
-          {ONBOARDING_APPS.map(app => (
-            <AppSelectRow
-              key={app.pkg}
-              app={app}
-              selected={selectedApps.includes(app.pkg)}
-              onToggle={() => toggleApp(app.pkg)}
-            />
-          ))}
-        </View>
-        <Text style={styles.addAnother}>+ Add another app</Text>
-      </ScrollView>
-      <View style={styles.footerBordered}>
-        <PillButton
-          label={`Continue · ${selectedApps.length} selected`}
-          onPress={next}
-          disabled={selectedApps.length === 0}
-        />
-      </View>
-    </View>
-  );
-
-  const renderMessage = () => (
-    <View style={styles.flex}>
-      <StepHeader onBack={back} stepLabel="Step 2 of 3" />
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollBody}
-      >
-        <Text style={styles.h2}>What should we say?</Text>
-        <Text style={styles.p}>Shown the moment you open a managed app.</Text>
-
-        <View style={styles.previewCard}>
-          <Text style={styles.previewLabel}>Preview</Text>
-          <Text style={styles.previewMessage}>
-            {message || 'Is this intentional?'}
-          </Text>
-        </View>
-
-        <View style={styles.messageList}>
-          {MESSAGE_PRESETS.map(preset => {
-            const active = !customMode && message === preset;
-            return (
-              <TouchableOpacity
-                key={preset}
-                style={[
-                  styles.messageOption,
-                  active && styles.messageOptionActive,
-                ]}
-                onPress={() => chooseMessage(preset)}
-                activeOpacity={0.7}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: active }}
-              >
-                <Text
-                  style={[
-                    styles.messageText,
-                    !active && styles.messageTextMuted,
-                  ]}
-                >
-                  {preset}
-                </Text>
-                {active ? (
-                  <View style={styles.messageCheck}>
-                    <CheckIcon
-                      size={10}
-                      color={T.iconOnInk}
-                      strokeWidth={3.5}
-                    />
-                  </View>
-                ) : null}
-              </TouchableOpacity>
-            );
-          })}
-
-          {customMode ? (
-            <TextInput
-              style={styles.customInput}
-              value={customText}
-              onChangeText={onCustomChange}
-              placeholder="Write your own"
-              placeholderTextColor={T.label}
-              autoFocus
-              maxLength={80}
-            />
-          ) : (
-            <TouchableOpacity
-              style={styles.customOption}
-              onPress={enableCustom}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.customOptionText}>+ Write your own</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </ScrollView>
-      <View style={styles.footer}>
-        <PillButton label="Continue" onPress={next} />
-      </View>
-    </View>
-  );
-
-  const renderBreath = () => (
-    <View style={styles.flex}>
-      <StepHeader onBack={back} stepLabel="Step 3 of 3" />
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollBody}
-      >
-        <Text style={styles.h2}>Add a breath</Text>
-        <Text style={styles.p}>
-          Turn a pause on per app, and choose how long.
-        </Text>
-        <View style={styles.breathList}>
-          {selectedApps.map(pkg => {
-            const app = ONBOARDING_APPS.find(a => a.pkg === pkg) || {
-              label: pkg,
-              monogram: '·',
-            };
-            const cfg = breath[pkg] || BREATH_FALLBACK;
-            return (
-              <View key={pkg} style={styles.breathCard}>
-                <View style={styles.breathHeader}>
-                  <Monogram
-                    text={app.monogram}
-                    active={cfg.on}
-                    size={34}
-                    radius={9}
-                    fontSize={14}
-                  />
-                  <Text
-                    style={[styles.breathName, !cfg.on && styles.breathNameOff]}
-                  >
-                    {app.label}
-                  </Text>
-                  <Toggle
-                    value={cfg.on}
-                    onChange={on => setBreathOn(pkg, on)}
-                    label={`${app.label} breath`}
-                  />
-                </View>
-                {cfg.on ? (
-                  <View style={styles.breathSegment}>
-                    <Segmented
-                      options={BREATH_DURATIONS}
-                      value={cfg.secs}
-                      onChange={secs => setBreathSecs(pkg, secs)}
-                    />
-                  </View>
-                ) : (
-                  <Text style={styles.breathOff}>
-                    Pause off — opens straight away.
-                  </Text>
-                )}
-              </View>
-            );
-          })}
-        </View>
-      </ScrollView>
-      <View style={styles.footer}>
-        <PillButton label="Continue" onPress={next} />
-      </View>
-    </View>
-  );
-
-  const renderPermission = () => {
-    const idx = step - FIRST_PERMISSION_STEP;
-    const config = PERMISSION_STEPS[idx];
-    const { Icon } = config;
-    return (
-      <View style={styles.flex}>
-        <View style={styles.permTopRow}>
-          <Eyebrow style={styles.permEyebrow}>Permissions</Eyebrow>
-          <ProgressDots total={PERMISSION_STEPS.length} active={idx} />
-        </View>
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.scrollBody}
-        >
-          <View style={styles.permIconTile}>
-            <Icon size={30} color={T.ink} />
-          </View>
-          <Eyebrow style={styles.requiredLabel}>Required to continue</Eyebrow>
-          <Text style={[styles.h2, styles.permHeadline]}>
-            {config.headline}
-          </Text>
-          <Text style={styles.permBody}>{config.body}</Text>
-          <View style={styles.permReassure}>
-            <ReassuranceCard>{config.reassurance}</ReassuranceCard>
-          </View>
-        </ScrollView>
-        <View style={styles.footer}>
-          <PillButton
-            label={config.cta}
-            onPress={() => requestPermission(config)}
-          />
-        </View>
-      </View>
-    );
-  };
-
-  // Optional opt-in — reuses the accessibility service to show a 60s pause when
-  // the user opens Break's uninstall screen. Skippable; persisted in
-  // handleComplete() via SettingsModule.saveUninstallLockEnabled().
-  const renderProtect = () => {
-    const enableAndContinue = () => {
-      console.log('[PermissionsScreen] deletion-prevention enabled');
-      setProtectEnabled(true);
-      next();
-    };
-    const skip = () => {
-      console.log('[PermissionsScreen] deletion-prevention skipped');
-      setProtectEnabled(false);
-      next();
-    };
-    return (
-      <View style={styles.flex}>
-        <View style={styles.permTopRow}>
-          <Eyebrow style={styles.permEyebrow}>One last thing</Eyebrow>
-        </View>
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.scrollBody}
-        >
-          <View style={styles.permIconTile}>
-            <ShieldIcon size={30} color={T.ink} strokeWidth={1.7} />
-          </View>
-          <Eyebrow style={styles.requiredLabel}>Optional</Eyebrow>
-          <Text style={[styles.h2, styles.permHeadline]}>
-            Prevent impulse deletion
-          </Text>
-          <Text style={styles.permBody}>
-            If you head to Break's uninstall screen, a full-screen pause appears
-            for 60 seconds with reasons to keep going. It's gentle friction —
-            never a lock, and you can always continue.
-          </Text>
-          <View style={styles.permReassure}>
-            <ReassuranceCard>
-              Uses the accessibility service you just granted — it only watches
-              for that one Settings screen and{' '}
-              <Text style={strongStyle}>collects no data at all</Text>.
-            </ReassuranceCard>
-          </View>
-        </ScrollView>
-        <View style={styles.footer}>
-          <PillButton label="Turn on protection" onPress={enableAndContinue} />
-          <TouchableOpacity
-            style={styles.skipLink}
-            onPress={skip}
-            activeOpacity={0.6}
-            accessibilityRole="button"
-            accessibilityLabel="Not now"
-          >
-            <Text style={styles.skipLinkText}>Not now</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  };
-
-  const renderDone = () => {
-    const breathOnCount = selectedApps.filter(
-      pkg => (breath[pkg] || BREATH_FALLBACK).on,
-    ).length;
-    return (
-      <View style={styles.centered}>
-        <View style={styles.doneCircle}>
-          <CheckIcon size={32} color={T.iconOnInk} strokeWidth={2.4} />
-        </View>
-        <Text style={styles.doneTitle}>You're all set</Text>
-        <Text style={styles.welcomeBody}>
-          All three permissions are on. Break is watching gently in the
-          background — and remembers nothing.
-        </Text>
-        <View style={styles.chipsRow}>
-          <View style={styles.chip}>
-            <View style={styles.chipDot} />
-            <Text style={styles.chipText}>
-              {selectedApps.length} apps managed
-            </Text>
-          </View>
-          {breathOnCount > 0 ? (
-            <View style={styles.chip}>
-              <Text style={styles.chipText}>
-                Breath on · {breathOnCount} apps
-              </Text>
-            </View>
-          ) : null}
-          {protectEnabled ? (
-            <View style={styles.chip}>
-              <Text style={styles.chipText}>Deletion guard on</Text>
-            </View>
-          ) : null}
-          <View style={styles.chip}>
-            <Text style={styles.chipText}>No data collected</Text>
-          </View>
-        </View>
-        <View style={styles.doneFooter}>
-          <PillButton label="Open Break" onPress={handleComplete} />
-        </View>
-      </View>
-    );
-  };
-
-  const renderStep = () => {
-    if (step === 0) return renderWelcome();
-    if (step === 1) return renderApps();
-    if (step === 2) return renderMessage();
-    if (step === 3) return renderBreath();
+    animation.start();
+    return () => animation.stop();
+  }, [step, reducedMotion, opacity]);
+  useEffect(() => {
     if (
-      step >= FIRST_PERMISSION_STEP &&
-      step < FIRST_PERMISSION_STEP + PERMISSION_STEPS.length
-    ) {
-      return renderPermission();
+      working.current ||
+      repair ||
+      installed.loading ||
+      installed.error ||
+      draft.completed
+    )
+      return;
+    const available = new Set(installed.apps.map(app => app.pkg));
+    const selections = draftRef.current.selections.filter(pkg =>
+      available.has(pkg),
+    );
+    if (selections.length !== draftRef.current.selections.length) {
+      edit({
+        selections,
+        step: 1,
+        deletionProtection: selections.length
+          ? draftRef.current.deletionProtection
+          : false,
+      });
+      setError(
+        'An app is no longer installed or enabled. Please review your choices.',
+      );
     }
-    if (step === PROTECT_STEP) return renderProtect();
-    return renderDone();
+  }, [
+    installed.apps,
+    installed.loading,
+    installed.error,
+    edit,
+    repair,
+    draft.completed,
+  ]);
+  const back = useCallback(() => {
+    if (working.current) return true;
+    if (repair || step === 0) return false;
+    if (step === 5) {
+      onComplete();
+      return true;
+    }
+    go(previousStep(step, hasApps, permissions));
+    return true;
+  }, [go, step, repair, hasApps, permissions, onComplete]);
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', back);
+    return () => sub.remove();
+  }, [back]);
+  const checked = useCallback(result => {
+    setPermissions(result);
+  }, []);
+  useEffect(() => {
+    if (!repair && step === 3 && allGranted(permissions)) go(4);
+  }, [repair, step, permissions, go]);
+
+  const continuePause = async () => {
+    try {
+      const result = await checkPermissions();
+      setPermissions(result);
+      go(allGranted(result) ? 4 : 3);
+    } catch (e) {
+      setError('Could not check permissions. Please retry.');
+    }
+  };
+  const activate = async () => {
+    if (working.current) return;
+    working.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      if (repair) {
+        const result = await checkPermissions();
+        setPermissions(result);
+        if (!allGranted(result))
+          throw new Error('Enable the remaining permissions first.');
+        const state = parseSetup(await SettingsModule.getOnboardingState());
+        const monitoring = await new Promise(resolve =>
+          SettingsModule.getMonitoringEnabled(resolve),
+        );
+        if (monitoring) await VPNModule.startMonitoring();
+        onComplete(state);
+      } else {
+        await queue.current.catch(() => {});
+        const submission = { ...draftRef.current };
+        if (hasApps) {
+          const apps = await installed.refresh();
+          if (!apps)
+            throw new Error(
+              'Could not check installed apps. Retry before activating.',
+            );
+          if (
+            submission.selections.some(
+              pkg => !apps.some(app => app.pkg === pkg),
+            )
+          ) {
+            const selections = submission.selections.filter(pkg =>
+              apps.some(app => app.pkg === pkg),
+            );
+            const corrected = edit({
+              selections,
+              step: 1,
+              deletionProtection: selections.length
+                ? submission.deletionProtection
+                : false,
+            });
+            await persist(corrected);
+            throw new Error(
+              'A selected app is no longer available. Go back to Apps and review your choices.',
+            );
+          }
+        }
+        const completed = parseSetup(
+          await SettingsModule.completeOnboarding(
+            JSON.stringify(submission),
+            CATALOG_PACKAGES,
+          ),
+        );
+        edit(completed);
+      }
+    } catch (e) {
+      setError(
+        e.message ||
+          'Setup could not finish. Your choices are saved; please retry.',
+      );
+    } finally {
+      working.current = false;
+      setBusy(false);
+    }
   };
 
   return (
     <SafeAreaView style={styles.safe}>
-      <Animated.View
-        style={[
-          styles.screen,
-          { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
-        ]}
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        {renderStep()}
-      </Animated.View>
+        <StepHeader
+          onBack={!repair && step > 0 && step < 5 && !busy ? back : undefined}
+          stepLabel={repair ? 'Restore permissions' : `Step ${step + 1} of 6`}
+        />
+        {!repair && <ProgressDots total={6} active={step} />}
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.scrollBody}
+        >
+          <Animated.View
+            style={{ opacity }}
+            pointerEvents={busy ? 'none' : 'auto'}
+          >
+            {step === 0 && (
+              <>
+                <Text style={styles.welcomeTitle}>Stay intentional</Text>
+                <Text style={styles.welcomeBody}>
+                  Make a little space before opening the apps that pull you in.
+                </Text>
+              </>
+            )}
+            {step === 1 && (
+              <>
+                <Text style={styles.h2}>
+                  Which apps do you want a pause before opening?
+                </Text>
+                <Text style={styles.p}>
+                  Choose from supported apps installed on your phone.
+                </Text>
+                {installed.loading ? (
+                  <ActivityIndicator />
+                ) : installed.error ? (
+                  <>
+                    <Text style={styles.p}>{installed.error}</Text>
+                    <PillButton
+                      label="Retry app lookup"
+                      onPress={installed.refresh}
+                    />
+                  </>
+                ) : installed.apps.length === 0 ? (
+                  <Text style={styles.p}>
+                    No supported apps are installed. You can set this up later
+                    from Home.
+                  </Text>
+                ) : (
+                  installed.apps.map(app => (
+                    <AppSelectRow
+                      key={app.pkg}
+                      app={app}
+                      selected={draft.selections.includes(app.pkg)}
+                      onToggle={() =>
+                        edit({
+                          selections: draft.selections.includes(app.pkg)
+                            ? draft.selections.filter(pkg => pkg !== app.pkg)
+                            : [...draft.selections, app.pkg],
+                        })
+                      }
+                    />
+                  ))
+                )}
+              </>
+            )}
+            {step === 2 && (
+              <>
+                <Text style={styles.h2}>How long would help you pause?</Text>
+                <Text style={styles.p}>
+                  The same pause applies to every app you chose.
+                </Text>
+                <Segmented
+                  options={[5, 15, 30]}
+                  value={draft.duration}
+                  onChange={duration => edit({ duration })}
+                />
+                <Text style={styles.h2}>
+                  What would you like to remind yourself?
+                </Text>
+                {MESSAGE_PRESETS.map(reminder => (
+                  <TouchableOpacity
+                    key={reminder}
+                    accessibilityRole="radio"
+                    accessibilityState={{
+                      selected: !custom && draft.reminder === reminder,
+                    }}
+                    style={[
+                      styles.messageOption,
+                      !custom &&
+                        draft.reminder === reminder &&
+                        styles.messageOptionActive,
+                    ]}
+                    onPress={() => {
+                      setCustom(false);
+                      edit({ reminder });
+                    }}
+                  >
+                    <Text style={styles.messageText}>{reminder}</Text>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Write my own reminder"
+                  onPress={() => {
+                    setCustom(true);
+                    edit({ reminder: '' });
+                  }}
+                >
+                  <Text style={styles.customOptionText}>
+                    Write my own reminder
+                  </Text>
+                </TouchableOpacity>
+                {custom && (
+                  <>
+                    <TextInput
+                      accessibilityLabel="Custom reminder"
+                      style={styles.customInput}
+                      value={draft.reminder}
+                      onChangeText={reminder => edit({ reminder })}
+                      maxLength={80}
+                      multiline
+                    />
+                    <Text style={styles.p}>{draft.reminder.length}/80</Text>
+                  </>
+                )}
+                <View style={styles.previewCard}>
+                  <Text style={styles.previewLabel}>
+                    Opening pause preview · {draft.duration} seconds
+                  </Text>
+                  <Text style={styles.previewMessage}>
+                    {draft.reminder || 'Your reminder here'}
+                  </Text>
+                </View>
+              </>
+            )}
+            {step === 3 && (
+              <>
+                {repair && (
+                  <Text style={styles.p}>
+                    Restore access so Break can use your saved settings. Your
+                    apps and pauses are unchanged.
+                  </Text>
+                )}
+                <PermissionPanel onChecked={checked} />
+              </>
+            )}
+            {step === 4 && (
+              <>
+                <Text style={styles.h2}>Review and activate</Text>
+                <Text style={styles.p}>
+                  {hasApps
+                    ? MANAGED_APPS.filter(app =>
+                        draft.selections.includes(app.pkg),
+                      )
+                        .map(app => app.label)
+                        .join(', ')
+                    : 'No apps selected. Monitoring will stay off.'}
+                </Text>
+                {hasApps && (
+                  <>
+                    <Text style={styles.p}>
+                      {draft.duration}-second pause · Once per opening
+                    </Text>
+                    <View style={styles.previewCard}>
+                      <Text style={styles.previewMessage}>
+                        {draft.reminder}
+                      </Text>
+                    </View>
+                    <Text style={styles.h2}>Optional deletion protection</Text>
+                    <Text style={styles.p}>
+                      Adds a 60-second pause on Break’s uninstall screen. You
+                      can continue uninstalling after the pause.
+                    </Text>
+                    <Toggle
+                      label="Deletion protection"
+                      value={draft.deletionProtection}
+                      onChange={enabled =>
+                        enabled
+                          ? setConsent(true)
+                          : edit({ deletionProtection: false })
+                      }
+                    />
+                  </>
+                )}
+              </>
+            )}
+            {step === 5 && (
+              <>
+                <Text style={styles.welcomeTitle}>
+                  {hasApps ? 'Your pauses are ready' : 'You’re all set'}
+                </Text>
+                <Text style={styles.welcomeBody}>
+                  {hasApps
+                    ? 'Your settings are saved and monitoring has started.'
+                    : 'Monitoring is off. Choose “Set up opening pauses” on Home whenever you’re ready.'}
+                </Text>
+              </>
+            )}
+          </Animated.View>
+          {error ? (
+            <Text
+              style={styles.p}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+            >
+              {error}
+            </Text>
+          ) : null}
+        </ScrollView>
+        <View style={styles.footer}>
+          {busy ? <ActivityIndicator color={T.ink} /> : null}
+          {step === 0 && (
+            <PillButton
+              label="Get started"
+              disabled={busy}
+              onPress={() => go(1)}
+            />
+          )}
+          {step === 1 && (
+            <>
+              <PillButton
+                label={`Continue · ${draft.selections.length} selected`}
+                disabled={
+                  busy || !hasApps || installed.loading || !!installed.error
+                }
+                onPress={() => go(2)}
+              />
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Continue without apps"
+                disabled={busy}
+                onPress={() => {
+                  edit({ selections: [], deletionProtection: false });
+                  go(4);
+                }}
+              >
+                <Text style={styles.customOptionText}>
+                  Continue without apps
+                </Text>
+              </TouchableOpacity>
+            </>
+          )}
+          {step === 2 && (
+            <PillButton
+              label="Continue"
+              disabled={busy || !draft.reminder.trim()}
+              onPress={continuePause}
+            />
+          )}
+          {step === 3 && repair && (
+            <PillButton
+              label="Return to Home"
+              disabled={busy || !allGranted(permissions)}
+              onPress={activate}
+            />
+          )}
+          {step === 4 && (
+            <PillButton
+              label={hasApps ? 'Activate pauses' : 'Finish setup'}
+              disabled={busy}
+              onPress={activate}
+            />
+          )}
+          {step === 5 && (
+            <PillButton label="Go to Home" onPress={() => onComplete(draft)} />
+          )}
+        </View>
+      </KeyboardAvoidingView>
+      <DeletionInfoModal
+        visible={consent}
+        animationType={reducedMotion ? 'none' : 'fade'}
+        onCancel={() => setConsent(false)}
+        onConfirm={() => {
+          setConsent(false);
+          edit({ deletionProtection: true });
+        }}
+      />
     </SafeAreaView>
   );
 }

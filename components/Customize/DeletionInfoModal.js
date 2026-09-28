@@ -24,11 +24,11 @@ const RISKS = [
   'Like any accessibility feature, it depends on a permission that can read screen content; Break uses it solely to detect blocked apps and this screen.',
 ];
 
-const DeletionInfoModal = ({ visible, onCancel, onConfirm }) => (
+const DeletionInfoModal = ({ visible, onCancel, onConfirm, animationType = 'fade' }) => (
   <Modal
     visible={visible}
     transparent
-    animationType="fade"
+    animationType={animationType}
     onRequestClose={onCancel}
   >
     <View style={styles.infoModalOverlay}>

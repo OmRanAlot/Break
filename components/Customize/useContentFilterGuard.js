@@ -1,18 +1,18 @@
 /**
  * useContentFilterGuard
  * ---------------------
- * Drives the opt-in "double-safe" disable for the browser content filter.
+ * Drives the two-layer protection for the browser content filter.
  *
  * State machine (authoritative in native ContentFilterGuard.java; mirrored live
  * here via shared/lockCycle.deriveGuardState):
  *
- *   PROTECTED ─requestDisable→ PENDING_WAIT ─(wait ends)→ CONFIRM_WINDOW
- *     └────────────── cancelDisable / auto-expiry re-instates ──────────────┘
- *   CONFIRM_WINDOW ─confirmDisable→ DISABLED
+ *   PROTECTED ──setDoubleSafe(false)──▶ LAYER_OFF_WAIT ──(wait ends)──▶ LAYER_OFF_READY
+ *   LAYER_OFF_WAIT/READY ──setDoubleSafe(true)──▶ PROTECTED
+ *   LAYER_OFF_READY ──saveContentFilterEnabled(false)──▶ TEMP_OFF
+ *   TEMP_OFF ──(12h)──▶ auto-re-enabled → LAYER_OFF_READY
  *
  * The hook refreshes from native on mount/focus, ticks once a second while a
- * pending disable is in flight, and re-syncs when a boundary passes (wait →
- * confirm window, or confirm window → auto re-instate).
+ * wait or auto-on is in progress, and re-syncs when a boundary passes.
  *
  * Logging prefix: [CFGuard]
  */
@@ -23,29 +23,29 @@ import { deriveGuardState, GUARD_STATES } from '../shared/lockCycle';
 
 const { SettingsModule } = NativeModules;
 
-const EMPTY_STATE = {
+const EMPTY_RAW = {
   doubleSafeEnabled: false,
   filterEnabled: true,
-  pendingDisableAtMs: 0,
   readyAtMs: 0,
-  confirmWindowMs: 0,
+  autoOnAtMs: 0,
 };
 
 /**
  * @param {object} [navigation] React Navigation prop (optional)
  * @returns {{
- *   state: string, doubleSafeEnabled: boolean, filterEnabled: boolean,
- *   readyAtMs: number, confirmEndsAtMs: number,
- *   waitRemainingMs: number, confirmRemainingMs: number,
+ *   state: string,
+ *   doubleSafeEnabled: boolean,
+ *   filterEnabled: boolean,
+ *   readyAtMs: number,
+ *   autoOnAtMs: number,
+ *   waitRemainingMs: number,
+ *   autoOnRemainingMs: number,
  *   refresh: () => void,
  *   setDoubleSafe: (v: boolean) => Promise<boolean>,
- *   requestDisable: () => Promise<boolean>,
- *   confirmDisable: () => Promise<boolean>,
- *   cancelDisable: () => Promise<boolean>,
  * }}
  */
 export default function useContentFilterGuard(navigation) {
-  const [raw, setRaw] = useState(EMPTY_STATE);
+  const [raw, setRaw] = useState(EMPTY_RAW);
   const [now, setNow] = useState(Date.now());
 
   const refresh = useCallback(() => {
@@ -56,9 +56,8 @@ export default function useContentFilterGuard(navigation) {
           setRaw({
             doubleSafeEnabled: !!parsed.doubleSafeEnabled,
             filterEnabled: !!parsed.filterEnabled,
-            pendingDisableAtMs: Number(parsed.pendingDisableAt) || 0,
             readyAtMs: Number(parsed.readyAt) || 0,
-            confirmWindowMs: Number(parsed.confirmWindowMs) || 0,
+            autoOnAtMs: Number(parsed.autoOnAt) || 0,
           });
         } catch (e) {
           console.warn('[CFGuard] parse failed:', e?.message || e);
@@ -80,38 +79,40 @@ export default function useContentFilterGuard(navigation) {
     };
   }, [navigation, refresh]);
 
-  // Live derivation — same math as native, so boundaries flip without a read.
+  // Live derivation — mirrors native math so state boundaries flip without a poll.
   const derived = deriveGuardState({
     nowMs: now,
     doubleSafeEnabled: raw.doubleSafeEnabled,
     filterEnabled: raw.filterEnabled,
-    pendingDisableAtMs: raw.pendingDisableAtMs,
     readyAtMs: raw.readyAtMs,
-    confirmWindowMs: raw.confirmWindowMs,
+    autoOnAtMs: raw.autoOnAtMs,
   });
 
-  const isPendingFlight =
-    derived.state === GUARD_STATES.PENDING_WAIT ||
-    derived.state === GUARD_STATES.CONFIRM_WINDOW;
+  const isLive =
+    derived.state === GUARD_STATES.LAYER_OFF_WAIT ||
+    derived.state === GUARD_STATES.TEMP_OFF;
 
-  // Tick while a pending disable is in flight so countdowns stay live.
+  // Tick while a wait or auto-on countdown is active.
   useEffect(() => {
-    if (!isPendingFlight) return undefined;
+    if (!isLive) return undefined;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [isPendingFlight]);
+  }, [isLive]);
 
-  // When the confirm window lapses, the derived state flips to PROTECTED while
-  // native still stores the stale pending — refresh so native lazily clears it.
+  // When LAYER_OFF_READY is reached (wait ended) or LAYER_OFF_READY → GUARD_OFF
+  // (auto-on elapsed while raw still has stale timestamps), re-sync from native
+  // so native can lazily clear expired state.
   useEffect(() => {
-    const nativeHasPending = raw.pendingDisableAtMs > 0;
-    if (nativeHasPending && derived.state === GUARD_STATES.PROTECTED) {
-      console.log(
-        '[CFGuard] confirm window lapsed → refreshing (auto re-instate)',
-      );
+    const nativeHasWait = raw.readyAtMs > 0;
+    const nativeHasAutoOn = raw.autoOnAtMs > 0;
+    if (
+      (nativeHasWait && derived.state === GUARD_STATES.LAYER_OFF_READY) ||
+      (nativeHasAutoOn && derived.state === GUARD_STATES.LAYER_OFF_READY)
+    ) {
+      console.log('[CFGuard] boundary reached → refreshing from native');
       refresh();
     }
-  }, [derived.state, raw.pendingDisableAtMs, refresh]);
+  }, [derived.state, raw.readyAtMs, raw.autoOnAtMs, refresh]);
 
   const setDoubleSafe = useCallback(
     async value => {
@@ -129,61 +130,21 @@ export default function useContentFilterGuard(navigation) {
     [refresh],
   );
 
-  const requestDisable = useCallback(async () => {
-    try {
-      await SettingsModule.requestContentFilterDisable();
-      console.log('[CFGuard] disable requested (barrier 1 down, wait started)');
-      return true;
-    } catch (e) {
-      console.warn('[CFGuard] requestDisable refused:', e?.message || e);
-      return false;
-    } finally {
-      refresh();
-    }
-  }, [refresh]);
-
-  const confirmDisable = useCallback(async () => {
-    try {
-      await SettingsModule.confirmContentFilterDisable();
-      console.log('[CFGuard] disable CONFIRMED — filter off');
-      return true;
-    } catch (e) {
-      console.warn('[CFGuard] confirmDisable refused:', e?.message || e);
-      return false;
-    } finally {
-      refresh();
-    }
-  }, [refresh]);
-
-  const cancelDisable = useCallback(async () => {
-    try {
-      await SettingsModule.cancelContentFilterDisable();
-      console.log('[CFGuard] pending disable cancelled');
-      return true;
-    } catch (e) {
-      console.warn('[CFGuard] cancelDisable failed:', e?.message || e);
-      return false;
-    } finally {
-      refresh();
-    }
-  }, [refresh]);
-
   return {
     state: derived.state,
     doubleSafeEnabled: raw.doubleSafeEnabled,
     filterEnabled: raw.filterEnabled,
     readyAtMs: derived.readyAtMs,
-    confirmEndsAtMs: derived.confirmEndsAtMs,
+    autoOnAtMs: derived.autoOnAtMs,
     waitRemainingMs:
-      derived.state === GUARD_STATES.PENDING_WAIT ? derived.readyAtMs - now : 0,
-    confirmRemainingMs:
-      derived.state === GUARD_STATES.CONFIRM_WINDOW
-        ? derived.confirmEndsAtMs - now
+      derived.state === GUARD_STATES.LAYER_OFF_WAIT
+        ? Math.max(0, derived.readyAtMs - now)
+        : 0,
+    autoOnRemainingMs:
+      derived.state === GUARD_STATES.TEMP_OFF
+        ? Math.max(0, derived.autoOnAtMs - now)
         : 0,
     refresh,
     setDoubleSafe,
-    requestDisable,
-    confirmDisable,
-    cancelDisable,
   };
 }
