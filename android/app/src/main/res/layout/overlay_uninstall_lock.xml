@@ -65,12 +65,11 @@
             android:minHeight="120dp" />
 
         <!--
-            "Return to home": ALWAYS visible (not gated by the 30s wait). Lets
+            "Return to home": ALWAYS visible (not gated by the 60s wait). Lets
             the user leave to the launcher at any time. onClick →
-            GLOBAL_ACTION_HOME + dismiss. Pressing the physical Home button has
-            the same effect — ReelsInterventionService auto-dismisses this
-            overlay on any non-Settings window change (same logic as the
-            app-intercept overlay).
+            GLOBAL_ACTION_HOME + dismiss. Pressing the physical Home button does
+            NOT auto-dismiss this overlay — the user must use one of the three
+            buttons (Return to home / Keep Break / Give up and delete).
         -->
         <Button
             android:id="@+id/uninstall_lock_home_btn"
@@ -85,8 +84,8 @@
 
         <!--
             Primary "Keep Break": visibility=gone here. UninstallLockOverlay
-            flips it to VISIBLE only after UNINSTALL_LOCK_DURATION_MS so the user
-            must sit with the messages first. onClick → GLOBAL_ACTION_HOME.
+            flips it to VISIBLE only after UNINSTALL_LOCK_DURATION_MS (60s) so
+            the user must sit with the messages first. onClick → GLOBAL_ACTION_HOME.
         -->
         <Button
             android:id="@+id/uninstall_lock_keep_btn"

@@ -84,6 +84,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import android.widget.Button;
 import android.widget.TextView;
 
@@ -166,6 +167,7 @@ public class ReelsInterventionService extends AccessibilityService {
     // --- WindowManager Overlays ---
     private InterventionOverlay interventionOverlay;
     private UninstallLockOverlay uninstallOverlay;
+    private ContentFilterLockOverlay contentFilterOverlay;
 
     // --- Mindful Viewing Coach (YouTube typing gate) ---
     // All trigger logic (launch gate + every-X-min re-fire) lives in
@@ -272,6 +274,8 @@ public class ReelsInterventionService extends AccessibilityService {
         youtubeDetector   = new YouTubeDetector(this, TAG);
         interventionOverlay = new InterventionOverlay(this, mainHandler);
         uninstallOverlay = new UninstallLockOverlay(this, mainHandler);
+        contentFilterOverlay = new ContentFilterLockOverlay(this, mainHandler);
+        BrowserBarContentFilter.setLockOverlay(contentFilterOverlay);
         coachGate = new YouTubeCoachGate(this, mainHandler, frameworkClassFilter, TAG);
         budgetState       = new BudgetState(this);
         budgetState.load(BreakPrefs.get(this));
@@ -417,6 +421,49 @@ public class ReelsInterventionService extends AccessibilityService {
         //     coachGate.onAccessibilityEvent(packageName, event);
         // }
 
+        // ── Uninstall-screen detection (UNINSTALL_WATCH) ──────────────────────────────
+        // Runs BEFORE the in-Reels app-switch block so that a Settings/packageinstaller
+        // event is never swallowed by the Reels early-return path.
+        // Watches com.android.settings + all packageinstaller variants + Play Store.
+        // Only scan on STATE_CHANGED or CONTENT_CHANGED; debounced to avoid hot loops.
+        if (UninstallScreenDetector.isUninstallWatchPackage(packageName)) {
+            if (!BreakPrefs.isUninstallLockEnabled(this)) {
+                // Feature is opt-in. Dismiss any stale overlay (e.g. pref just turned off).
+                if (uninstallOverlay != null && uninstallOverlay.isShowing()) {
+                    uninstallOverlay.dismiss();
+                }
+                // Fall through — still process this event for other subsystems.
+            } else {
+                // If already showing, do nothing — the overlay is sticky by design.
+                if (uninstallOverlay != null && uninstallOverlay.isShowing()) {
+                    return;
+                }
+
+                int evtType = event.getEventType();
+                if (evtType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                        || evtType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+                    long nowCheck = System.currentTimeMillis();
+                    if (nowCheck - lastUninstallCheckMs >= UNINSTALL_CHECK_DEBOUNCE_MS) {
+                        lastUninstallCheckMs = nowCheck;
+
+                        // Walk ALL interactive windows so we catch the uninstall-confirm
+                        // dialog even when getRootInActiveWindow() returns our own overlay
+                        // or an IME window instead of the target Settings/packageinstaller root.
+                        List<AccessibilityWindowInfo> windows = getWindows();
+                        boolean onUninstallScreen =
+                                UninstallScreenDetector.isOnBreakUninstallScreen(this, windows);
+
+                        if (onUninstallScreen
+                                && uninstallOverlay != null && !uninstallOverlay.isShowing()) {
+                            Log.i(TAG, "[UNINSTALL_WATCH] Break uninstall screen detected — showing lock overlay");
+                            uninstallOverlay.show(() -> performGlobalAction(GLOBAL_ACTION_HOME));
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
         // --- App-switch detection (defense in depth for false-positive fix) ---
         // When the user is in Reels and a DIFFERENT app comes to foreground
         // (e.g., Android launcher via Home button, or any other app via recents),
@@ -513,54 +560,9 @@ public class ReelsInterventionService extends AccessibilityService {
             return;
         }
 
-        // ── Uninstall-screen detection (UNINSTALL_WATCH) ──────────────────────────────
-        // When the user opens Settings → Apps → Break → Uninstall, show a lock-in popup.
-        // We receive Settings events because packageNames filter is absent from the XML config.
-        // Only scan on STATE_CHANGED or CONTENT_CHANGED to avoid reacting to scroll events.
-        // Debounced to UNINSTALL_CHECK_DEBOUNCE_MS — Settings spams CONTENT_CHANGED.
-        if (PKG_SETTINGS.equals(packageName)) {
-            // Feature is opt-in. If the user hasn't enabled deletion prevention in
-            // Customize, never inspect Settings or show the lock screen. Dismiss any
-            // stale overlay defensively (e.g. setting was just turned off).
-            if (!BreakPrefs.isUninstallLockEnabled(this)) {
-                if (uninstallOverlay != null && uninstallOverlay.isShowing()) {
-                    uninstallOverlay.dismiss();
-                }
-                return;
-            }
-
-            int evtType = event.getEventType();
-            if (evtType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                    || evtType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-                long nowCheck = System.currentTimeMillis();
-                if (nowCheck - lastUninstallCheckMs >= UNINSTALL_CHECK_DEBOUNCE_MS) {
-                    lastUninstallCheckMs = nowCheck;
-                    AccessibilityNodeInfo settingsRoot = getRootInActiveWindow();
-                    boolean onUninstallScreen = UninstallScreenDetector.isOnBreakUninstallScreen(this, settingsRoot);
-                    if (settingsRoot != null) settingsRoot.recycle();
-
-                    // STICKY: once the lock overlay is up it must persist regardless
-                    // of subsequent screen changes. The opaque overlay window itself
-                    // makes getRootInActiveWindow() stop reporting the uninstall
-                    // screen (onUninstallScreen flips to false), and adding the
-                    // overlay fires a STATE_CHANGED for pkg=com.Break — previously
-                    // both tore the overlay down ~140ms after show, before the
-                    // mandatory 30s wait could elapse. We now ONLY show; the
-                    // overlay's own buttons ("Return to home" / "Keep Break" /
-                    // "delete anyway" after 30s) are the sole dismissal paths.
-                    if (onUninstallScreen
-                            && uninstallOverlay != null && !uninstallOverlay.isShowing()) {
-                        Log.i(TAG, "[UNINSTALL_WATCH] Break uninstall screen detected — showing lock overlay");
-                        uninstallOverlay.show(() -> performGlobalAction(GLOBAL_ACTION_HOME));
-                    }
-                }
-            }
-            return;
-        }
-
-        // NOTE: Intentionally NO "user left Settings" auto-dismiss here. The lock
-        // overlay is sticky by design — leaving it only via its own buttons
-        // enforces the mandatory 30s wait before uninstall can proceed.
+        // NOTE: Intentionally NO "user left Settings/packageinstaller" auto-dismiss here.
+        // The lock overlay is sticky by design — leaving it only via its own buttons
+        // enforces the mandatory 60s wait before uninstall can proceed.
 
         // Only process scroll/state events for scroll-budget logic from Instagram or YouTube.
         // TikTok is handled entirely by AppEventRouter (ContentFilter) above — no budget tracking.
@@ -588,6 +590,8 @@ public class ReelsInterventionService extends AccessibilityService {
         // Service interrupted (e.g. user revoked permission) — clean up any visible overlay
         dismissIntervention();
         if (uninstallOverlay != null) uninstallOverlay.dismiss();
+        if (contentFilterOverlay != null) contentFilterOverlay.dismiss();
+        BrowserBarContentFilter.setLockOverlay(null);
         if (budgetConfigListener != null) {
             BreakPrefs.get(this).unregisterOnSharedPreferenceChangeListener(budgetConfigListener);
             budgetConfigListener = null;
@@ -611,6 +615,8 @@ public class ReelsInterventionService extends AccessibilityService {
     public void onDestroy() {
         BrowserBarContentFilter.cancelDeferredCallbacks();
         if (uninstallOverlay != null) uninstallOverlay.dismiss();
+        if (contentFilterOverlay != null) contentFilterOverlay.dismiss();
+        BrowserBarContentFilter.setLockOverlay(null);
         if (budgetConfigListener != null) {
             BreakPrefs.get(this).unregisterOnSharedPreferenceChangeListener(budgetConfigListener);
             budgetConfigListener = null;

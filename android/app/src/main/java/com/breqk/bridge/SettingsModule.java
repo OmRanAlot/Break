@@ -68,6 +68,39 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
+    public void getInstalledSupportedApps(ReadableArray catalog, Promise promise) {
+        try {
+            promise.resolve(com.Break.onboarding.OnboardingStore.installed(reactContext,
+                    new org.json.JSONArray(catalog.toArrayList())).toString());
+        } catch (Exception e) { promise.reject("APP_LOOKUP_FAILED", "Could not check installed apps. Please retry.", e); }
+    }
+
+    @ReactMethod
+    public void getOnboardingState(Promise promise) {
+        try { promise.resolve(com.Break.onboarding.OnboardingStore.read(reactContext).toString()); }
+        catch (Exception e) { promise.reject("SETUP_READ_FAILED", e.getMessage(), e); }
+    }
+
+    @ReactMethod
+    public void saveOnboardingDraft(String json, Promise promise) {
+        try { promise.resolve(com.Break.onboarding.OnboardingStore.saveDraft(reactContext, json).toString()); }
+        catch (Exception e) { promise.reject("SETUP_SAVE_FAILED", e.getMessage(), e); }
+    }
+
+    @ReactMethod
+    public void beginAppSetup(Promise promise) {
+        try { promise.resolve(com.Break.onboarding.OnboardingStore.beginAppSetup(reactContext).toString()); }
+        catch (Exception e) { promise.reject("SETUP_BEGIN_FAILED", e.getMessage(), e); }
+    }
+
+    @ReactMethod
+    public void completeOnboarding(String json, ReadableArray catalog, Promise promise) {
+        try { promise.resolve(com.Break.onboarding.OnboardingStore.complete(reactContext, json,
+                    new org.json.JSONArray(catalog.toArrayList())).toString()); }
+        catch (Exception e) { promise.reject("SETUP_ACTIVATION_FAILED", e.getMessage(), e); }
+    }
+
+    @ReactMethod
     public void getBlockedApps(com.facebook.react.bridge.Callback callback) {
         Log.d(TAG, "[GET] getBlockedApps called");
         Set<String> blockedApps = BreakPrefs.getBlockedApps(reactContext);
@@ -529,8 +562,8 @@ public class SettingsModule extends ReactContextBaseJavaModule {
 
     /**
      * Returns the guard state as a JSON string:
-     * { doubleSafeEnabled, filterEnabled, state, pendingDisableAt, readyAt,
-     *   confirmWindowMs, confirmEndsAt, now }.
+     * { doubleSafeEnabled, filterEnabled, state, layerOffAt, readyAt,
+     *   autoOnAt, now }.
      */
     @ReactMethod
     public void getContentFilterGuardState(Callback callback) {
@@ -540,8 +573,13 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Enables/disables the double-safe guard. Rejects turning it OFF while a
-     * pending disable is in flight (that would shortcut the wait).
+     * Enables or disables the Double-safe guard.
+     *
+     * Enabling: always instant if the filter is currently on. Clears any pending
+     *   wait and returns to PROTECTED.
+     *
+     * Disabling: only valid from PROTECTED. Immediately starts the lock-duration
+     *   wait (filter stays ON). Refused from LAYER_OFF_WAIT/LAYER_OFF_READY.
      */
     @ReactMethod
     public void setContentFilterDoubleSafe(boolean enabled, Promise promise) {
@@ -550,40 +588,39 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         if (ok) {
             promise.resolve(true);
         } else {
-            promise.reject("CF_GUARD_REFUSED",
-                    "Cannot turn off double-safe while a disable is pending");
+            String reason = enabled
+                    ? "Cannot enable double-safe while the filter is off"
+                    : "Cannot start a new wait — already in LAYER_OFF_WAIT or LAYER_OFF_READY";
+            promise.reject("CF_GUARD_REFUSED", reason);
         }
     }
 
-    /** Step 1: request the disable. Starts the full-duration wait; filter stays ON. */
+    /**
+     * @deprecated No longer called by JS. The old two-step requestDisable path
+     *   is replaced by setContentFilterDoubleSafe(false). Kept as a safe stub.
+     */
     @ReactMethod
     public void requestContentFilterDisable(Promise promise) {
-        boolean ok = ContentFilterGuard.requestDisable(reactContext);
-        Log.d(TAG, "[CF_GUARD] requestContentFilterDisable ok=" + ok);
-        if (ok) {
-            promise.resolve(true);
-        } else {
-            promise.reject("CF_GUARD_REFUSED", "Disable request not valid in current state");
-        }
+        Log.w(TAG, "[CF_GUARD] requestContentFilterDisable is deprecated — use setContentFilterDoubleSafe(false)");
+        promise.reject("CF_GUARD_DEPRECATED", "Use setContentFilterDoubleSafe(false) instead");
     }
 
-    /** Step 2: confirm the disable inside the confirm window. Flips the filter off. */
+    /**
+     * @deprecated No longer called by JS. The old confirm-window step is removed.
+     *   Kept as a safe stub.
+     */
     @ReactMethod
     public void confirmContentFilterDisable(Promise promise) {
-        boolean ok = ContentFilterGuard.confirmDisable(reactContext);
-        Log.d(TAG, "[CF_GUARD] confirmContentFilterDisable ok=" + ok);
-        if (ok) {
-            promise.resolve(true);
-        } else {
-            promise.reject("CF_GUARD_REFUSED", "Confirm not valid in current state");
-        }
+        Log.w(TAG, "[CF_GUARD] confirmContentFilterDisable is deprecated — confirm window removed");
+        promise.reject("CF_GUARD_DEPRECATED", "Confirm window no longer exists");
     }
 
-    /** Cancels an in-flight pending disable (always allowed). */
+    /**
+     * @deprecated No longer called by JS. Kept as a safe stub.
+     */
     @ReactMethod
     public void cancelContentFilterDisable(Promise promise) {
-        ContentFilterGuard.cancelDisable(reactContext);
-        Log.d(TAG, "[CF_GUARD] cancelContentFilterDisable");
+        Log.w(TAG, "[CF_GUARD] cancelContentFilterDisable is deprecated");
         promise.resolve(true);
     }
 
@@ -726,24 +763,36 @@ public class SettingsModule extends ReactContextBaseJavaModule {
 
     /**
      * Enables or disables the browser content filter.
-     * ReelsInterventionService checks this pref on browser accessibility events.
+     *
+     * Enabling: always allowed. Clears any auto-on timer and stale wait state.
+     *
+     * Disabling: only allowed when isDirectDisableAllowed() — i.e. the guard is
+     *   off entirely (GUARD_OFF) or the lock-duration wait is complete
+     *   (LAYER_OFF_READY). If coming from LAYER_OFF_READY, stamps the 12h
+     *   auto-on timer via ContentFilterGuard.onFilterDisabled().
+     *   Refused while Double-safe is on (PROTECTED) or during the wait
+     *   (LAYER_OFF_WAIT) — JS shows explanation modals for those cases.
      */
     @ReactMethod
     public void saveContentFilterEnabled(boolean enabled, Promise promise) {
         Log.d(TAG, "[FILTER] saveContentFilterEnabled=" + enabled);
         try {
-            // Defense in depth: while the double-safe guard is on, a DIRECT
-            // disable is refused — the only path off is the two-step guard flow
-            // (requestContentFilterDisable → confirmContentFilterDisable).
-            if (!enabled && !ContentFilterGuard.isDirectDisableAllowed(reactContext)) {
-                Log.w(TAG, "[FILTER] direct disable refused — double-safe guard is on");
-                promise.reject("CF_GUARD_REFUSED",
-                        "Double-safe is on: disable via the two-step flow");
-                return;
-            }
-            BreakPrefs.setContentFilterEnabled(reactContext, enabled);
-            // Re-enabling instantly discards any pending two-step disable.
-            if (enabled) {
+            if (!enabled) {
+                if (!ContentFilterGuard.isDirectDisableAllowed(reactContext)) {
+                    String state = ContentFilterGuard.getState(reactContext);
+                    Log.w(TAG, "[FILTER] disable refused — state=" + state);
+                    promise.reject("CF_GUARD_REFUSED",
+                            "Filter cannot be disabled in state: " + state);
+                    return;
+                }
+                // Coming from LAYER_OFF_READY: stamp the 12h auto-on timer.
+                String state = ContentFilterGuard.getState(reactContext);
+                BreakPrefs.setContentFilterEnabled(reactContext, false);
+                if (ContentFilterGuard.STATE_LAYER_OFF_READY.equals(state)) {
+                    ContentFilterGuard.onFilterDisabled(reactContext);
+                }
+            } else {
+                BreakPrefs.setContentFilterEnabled(reactContext, true);
                 ContentFilterGuard.onFilterEnabled(reactContext);
             }
             promise.resolve(null);

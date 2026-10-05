@@ -14,16 +14,26 @@
  * All functions are pure: (inputs) → new object, no mutation, no I/O.
  */
 
-/** Guard state names — must match ContentFilterGuard.java. */
+/**
+ * Guard state names — must match ContentFilterGuard.java STATE_* constants.
+ *
+ * GUARD_OFF        Double-safe off, no wait running, filter freely editable
+ * PROTECTED        Double-safe on, filter on, no wait
+ * LAYER_OFF_WAIT   Double-safe just turned off; filter on; wait in progress
+ * LAYER_OFF_READY  Wait complete; filter disable now allowed
+ * TEMP_OFF         Filter off; 12h auto-on timer running
+ * DISABLED         Filter off; no auto-on timer
+ */
 export const GUARD_STATES = {
-  GUARD_OFF: 'GUARD_OFF',
-  PROTECTED: 'PROTECTED',
-  PENDING_WAIT: 'PENDING_WAIT',
-  CONFIRM_WINDOW: 'CONFIRM_WINDOW',
-  DISABLED: 'DISABLED',
+  GUARD_OFF:        'GUARD_OFF',
+  PROTECTED:        'PROTECTED',
+  LAYER_OFF_WAIT:   'LAYER_OFF_WAIT',
+  LAYER_OFF_READY:  'LAYER_OFF_READY',
+  TEMP_OFF:         'TEMP_OFF',
+  DISABLED:         'DISABLED',
 };
 
-/** Confirm window when the grace setting is "None": 4 hours (mirrors native). */
+/** @deprecated Confirm window removed. Kept so old imports don't break. */
 export const CF_INTERNAL_CONFIRM_WINDOW_MS = 4 * 60 * 60 * 1000;
 
 /**
@@ -61,48 +71,57 @@ export function deriveLockCycle({
 
 /**
  * Live guard state from the raw timestamps the bridge returns.
+ * Mirrors ContentFilterGuard.getState() — keep in sync with the native logic.
  *
  * @param {{
  *   nowMs: number,
  *   doubleSafeEnabled: boolean,
  *   filterEnabled: boolean,
- *   pendingDisableAtMs: number, // 0 = no pending disable
- *   readyAtMs: number,          // end of the full-duration wait
- *   confirmWindowMs: number,    // grace, or 4h internal fallback
+ *   readyAtMs: number,   // epoch-ms when filter disable becomes allowed (0 = none)
+ *   autoOnAtMs: number,  // epoch-ms for 12h auto-on (0 = none)
  * }} args
  * @returns {{
- *   state: string,              // one of GUARD_STATES
- *   readyAtMs: number,          // when the confirm window opens (0 if n/a)
- *   confirmEndsAtMs: number,    // when the pending disable auto-reverts (0 if n/a)
+ *   state: string,       // one of GUARD_STATES
+ *   readyAtMs: number,   // as passed in (0 if not applicable)
+ *   autoOnAtMs: number,  // as passed in (0 if not applicable)
  * }}
  */
 export function deriveGuardState({
   nowMs,
   doubleSafeEnabled,
   filterEnabled,
-  pendingDisableAtMs,
   readyAtMs,
-  confirmWindowMs,
+  autoOnAtMs,
 }) {
-  if (!filterEnabled) {
-    return { state: GUARD_STATES.DISABLED, readyAtMs: 0, confirmEndsAtMs: 0 };
+  // Mirror the lazy auto-reenable: if 12h has elapsed treat the filter as on.
+  let effectiveFilterEnabled = filterEnabled;
+  let effectiveAutoOnAtMs = autoOnAtMs || 0;
+  if (!effectiveFilterEnabled && effectiveAutoOnAtMs > 0 && nowMs >= effectiveAutoOnAtMs) {
+    effectiveFilterEnabled = true;
+    effectiveAutoOnAtMs = 0;
   }
-  if (!doubleSafeEnabled) {
-    return { state: GUARD_STATES.GUARD_OFF, readyAtMs: 0, confirmEndsAtMs: 0 };
+
+  if (!effectiveFilterEnabled) {
+    if (effectiveAutoOnAtMs > 0) {
+      return { state: GUARD_STATES.TEMP_OFF, readyAtMs: 0, autoOnAtMs: effectiveAutoOnAtMs };
+    }
+    return { state: GUARD_STATES.DISABLED, readyAtMs: 0, autoOnAtMs: 0 };
   }
-  if (!pendingDisableAtMs || pendingDisableAtMs <= 0) {
-    return { state: GUARD_STATES.PROTECTED, readyAtMs: 0, confirmEndsAtMs: 0 };
+
+  if (doubleSafeEnabled) {
+    return { state: GUARD_STATES.PROTECTED, readyAtMs: 0, autoOnAtMs: 0 };
   }
-  const confirmEndsAtMs = readyAtMs + confirmWindowMs;
-  if (nowMs < readyAtMs) {
-    return { state: GUARD_STATES.PENDING_WAIT, readyAtMs, confirmEndsAtMs };
+
+  const effectiveReadyAt = readyAtMs || 0;
+  if (effectiveReadyAt <= 0) {
+    return { state: GUARD_STATES.GUARD_OFF, readyAtMs: 0, autoOnAtMs: 0 };
   }
-  if (nowMs < confirmEndsAtMs) {
-    return { state: GUARD_STATES.CONFIRM_WINDOW, readyAtMs, confirmEndsAtMs };
+
+  if (nowMs < effectiveReadyAt) {
+    return { state: GUARD_STATES.LAYER_OFF_WAIT, readyAtMs: effectiveReadyAt, autoOnAtMs: 0 };
   }
-  // Confirm window expired untouched — barrier re-instates (native clears the
-  // stored pending on its next read; we mirror the outcome immediately).
-  return { state: GUARD_STATES.PROTECTED, readyAtMs: 0, confirmEndsAtMs: 0 };
+
+  return { state: GUARD_STATES.LAYER_OFF_READY, readyAtMs: effectiveReadyAt, autoOnAtMs: 0 };
 }
 
 /**

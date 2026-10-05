@@ -33,6 +33,7 @@ import java.util.Set;
  * Logging: No logging — this is a constants/utility-only class.
  */
 public final class BreakPrefs {
+    public static final String KEY_ONBOARDING_STATE = "onboarding_state";
 
     // ── Preferences file name ────────────────────────────────────────────────
     public static final String PREFS_NAME = "Break_prefs";
@@ -211,7 +212,7 @@ public final class BreakPrefs {
     public static final String KEY_DELETE_REQUEST_EXPIRES_AT = "delete_request_expires_at";
     public static final String KEY_DELETE_REQUEST_BOOT_ID = "delete_request_boot_id";
 
-    public static final long UNINSTALL_LOCK_DURATION_MS = 60_000L; // 30-second delay
+    public static final long UNINSTALL_LOCK_DURATION_MS = 60_000L; // 60-second pause before Keep/Delete appear
     public static final String UNINSTALL_LOCK_CONSENT_VERSION_CURRENT = "2026-05-12-v1";
 
     // ── Configuration Cooldown ("Commitment Lock") ─────────────────────────────
@@ -268,20 +269,31 @@ public final class BreakPrefs {
     public static final long MAX_SETTINGS_LOCK_GRACE_MS = 24L * 60 * 60 * 1000;
 
     // ── Content Filter double-safe disable ─────────────────────────────────────
-    // Opt-in second barrier on the browser content filter. When enabled, turning
-    // the filter OFF takes two steps separated by a full settings-lock duration:
-    //   disable #1 → filter STAYS ON, wait (lock duration) → confirm window →
-    //   disable #2 actually flips content_filter_enabled off.
-    // If the confirm window passes with no action, the pending disable is
-    // discarded and the filter stays protected. The confirm window is always
-    // CF_INTERNAL_CONFIRM_WINDOW_MS (4h). See com.Break.lock.ContentFilterGuard.
-    // CRITICAL: never wipe these keys in a "reset to defaults" routine — doing so
-    // would shortcut (or spuriously restart) an active wait.
+    // Opt-in two-layer protection for the browser content filter.
+    //
+    // Layer 1 — Double-safe toggle:
+    //   Turning it OFF is instant but starts a mandatory wait equal to the
+    //   Settings Change Lock duration. Filter stays ON during the wait.
+    //   KEY_CF_PENDING_DISABLE_AT = epoch-ms when the layer was turned off.
+    //   KEY_CF_PENDING_READY_AT   = epoch-ms when the filter disable is allowed.
+    //
+    // Layer 2 — Content filter switch:
+    //   Only disableable after the wait (state = LAYER_OFF_READY). Disabling
+    //   stamps KEY_CF_AUTO_ON_AT = now + CF_AUTO_ON_MS (12h). The filter re-
+    //   enables lazily on the next ContentFilterGuard.getState() call.
+    //
+    // CRITICAL: never wipe these keys in a "reset to defaults" routine — doing
+    // so would shortcut (or spuriously restart) an active wait/auto-on timer.
     public static final String KEY_CF_DOUBLE_SAFE_ENABLED = "content_filter_double_safe_enabled";
-    public static final String KEY_CF_PENDING_DISABLE_AT = "content_filter_pending_disable_at";
-    public static final String KEY_CF_PENDING_READY_AT = "content_filter_pending_ready_at";
+    public static final String KEY_CF_PENDING_DISABLE_AT  = "content_filter_pending_disable_at";
+    public static final String KEY_CF_PENDING_READY_AT    = "content_filter_pending_ready_at";
+    public static final String KEY_CF_AUTO_ON_AT          = "content_filter_auto_on_at";
 
-    /** Confirm window when the grace setting is "None": 4 hours. */
+    /** How long the content filter stays off before auto-reenabling: 12 hours. */
+    public static final long CF_AUTO_ON_MS = 12L * 60 * 60 * 1000;
+
+    /** @deprecated No longer used — confirm window removed. Kept for compile compat. */
+    @Deprecated
     public static final long CF_INTERNAL_CONFIRM_WINDOW_MS = 4L * 60 * 60 * 1000;
 
     // ── Default values ───────────────────────────────────────────────────────
@@ -827,6 +839,12 @@ public final class BreakPrefs {
         if (currentVersion >= DEFAULT_MODES_VERSION)
             return;
 
+        // An upgrade must not replace a user's existing modes.
+        if (!getModes(context).toString().equals("{}")) {
+            prefs.edit().putInt(KEY_DEFAULT_MODES_VERSION, DEFAULT_MODES_VERSION).apply();
+            return;
+        }
+
         // Mark version immediately to prevent re-runs
         prefs.edit().putInt(KEY_DEFAULT_MODES_VERSION, DEFAULT_MODES_VERSION).apply();
 
@@ -860,6 +878,9 @@ public final class BreakPrefs {
             defaultTikTok.put(FEATURE_LAUNCH_POPUP, true);
             defaultPolicies.put("com.zhiliaoapp.musically", defaultTikTok);
             defaultMode.put("policy_overrides", defaultPolicies);
+            if (com.Break.onboarding.OnboardingStore.isFreshSetup(context)) {
+                defaultMode.put("policy_overrides", new JSONObject());
+            }
             defaultMode.put("setting_overrides", new JSONObject());
             modes.put("default", defaultMode);
 
@@ -916,6 +937,10 @@ public final class BreakPrefs {
             schedule.put("end_time", "07:00");
             schedule.put("days", new org.json.JSONArray(new int[] { 0, 1, 2, 3, 4, 5, 6 }));
             bedtime.put("schedule", schedule);
+            if (com.Break.onboarding.OnboardingStore.isFreshSetup(context)) {
+                // A missing schedule is the existing disabled-schedule representation.
+                bedtime.remove("schedule");
+            }
             modes.put("bedtime", bedtime);
 
             saveModes(context, modes);
@@ -1052,10 +1077,10 @@ public final class BreakPrefs {
 
     /**
      * Browser bar / blocked-domain redirects (via {@link ReelsInterventionService}).
-     * Default true; Customize switch can turn it off without revoking accessibility permission.
+     * Opt-in: an absent preference is disabled. Explicitly saved choices are preserved.
      */
     public static boolean isContentFilterEnabled(Context context) {
-        return get(context).getBoolean(KEY_CONTENT_FILTER_ENABLED, true);
+        return get(context).getBoolean(KEY_CONTENT_FILTER_ENABLED, false);
     }
 
     /** Enables or disables the browser content filter. */

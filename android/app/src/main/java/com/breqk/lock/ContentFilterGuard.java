@@ -11,198 +11,236 @@ import org.json.JSONObject;
 /**
  * ContentFilterGuard
  * ------------------
- * Opt-in "double-safe" disable for the browser content filter.
+ * Two-layer protection for the browser content filter.
  *
- * When the guard is ON, turning the content filter off is a TWO-step commitment:
+ * Layer 1 — Double-safe toggle:
+ *   Turning it OFF is instant but immediately starts a mandatory wait equal to
+ *   the Settings Change Lock duration. During this wait the content filter stays
+ *   ON and its switch is disabled.
  *
- *   PROTECTED ──requestDisable()──▶ PENDING_WAIT ──(lock duration elapses)──▶
- *   CONFIRM_WINDOW ──confirmDisable()──▶ DISABLED
+ * Layer 2 — Content filter switch:
+ *   The filter can only be turned OFF once the wait has elapsed (LAYER_OFF_READY).
+ *   Doing so stamps a 12-hour auto-on timer; the filter re-enables itself lazily
+ *   on the next state read — no AlarmManager required.
  *
- *   - PENDING_WAIT: the filter STAYS ACTIVE. The wait equals the settings-lock
- *     duration (default 24h) captured at request time as {@code readyAt}.
- *   - CONFIRM_WINDOW: the user may confirm the final disable. Its length is
- *     always {@link BreakPrefs#CF_INTERNAL_CONFIRM_WINDOW_MS} (4h).
- *   - If the confirm window passes untouched, the pending disable is DISCARDED
- *     (lazily, on the next read) and the filter returns to PROTECTED — the first
- *     barrier re-instates itself automatically.
- *   - cancelDisable() clears a pending disable at any point.
- *   - Re-ENABLING the filter is always instant and also clears any pending state.
+ * State machine (names shared with the JS layer via lockCycle.js):
  *
- * Like SettingsLockManager, everything is a pure read-time derivation from two
- * stored timestamps — no AlarmManager. The filter service keeps reading
- * {@code content_filter_enabled} untouched: that flag only flips on the final
- * confirm, so BrowserBarContentFilter needs no knowledge of this class.
+ *   GUARD_OFF       — Double-safe off, no wait, filter freely editable
+ *   PROTECTED       — Double-safe on, filter on, no wait
+ *   LAYER_OFF_WAIT  — Double-safe just turned off, filter on, wait in progress
+ *   LAYER_OFF_READY — Wait complete, filter disable now allowed
+ *   TEMP_OFF        — Filter off, 12h auto-on timer running
+ *   DISABLED        — Filter off, no auto-on (guard was never the path)
  *
- * Threat model: resists impulsive in-app disables only (same as the settings
- * lock). Not hardened against pm clear or clock changes.
+ * All state is derived lazily from stored timestamps — no AlarmManager.
+ * BrowserBarContentFilter just reads isContentFilterEnabled() which is kept
+ * correct at every state-read boundary.
  *
- * Logging: CF_GUARD
+ * Logging prefix: CF_GUARD
  */
 public final class ContentFilterGuard {
 
     private static final String TAG = "CF_GUARD";
 
-    // State names shared with the JS layer (see useContentFilterGuard.js).
-    public static final String STATE_OFF_GUARD = "GUARD_OFF"; // double-safe not enabled
-    public static final String STATE_PROTECTED = "PROTECTED";
-    public static final String STATE_PENDING_WAIT = "PENDING_WAIT";
-    public static final String STATE_CONFIRM_WINDOW = "CONFIRM_WINDOW";
-    public static final String STATE_DISABLED = "DISABLED"; // filter itself is off
+    // State names — MUST match GUARD_STATES in components/shared/lockCycle.js.
+    public static final String STATE_GUARD_OFF       = "GUARD_OFF";
+    public static final String STATE_PROTECTED       = "PROTECTED";
+    public static final String STATE_LAYER_OFF_WAIT  = "LAYER_OFF_WAIT";
+    public static final String STATE_LAYER_OFF_READY = "LAYER_OFF_READY";
+    public static final String STATE_TEMP_OFF        = "TEMP_OFF";
+    public static final String STATE_DISABLED        = "DISABLED";
 
     private ContentFilterGuard() {}
 
-    // ── Feature toggle ─────────────────────────────────────────────────────────
+    // ── Internal timestamp helpers ────────────────────────────────────────────
 
-    /** Whether the double-safe guard is enabled (default false). */
+    /** Epoch-ms when Double-safe was turned off (0 = no wait started). */
+    private static long getLayerOffAt(Context context) {
+        return BreakPrefs.get(context).getLong(BreakPrefs.KEY_CF_PENDING_DISABLE_AT, 0L);
+    }
+
+    /** Epoch-ms when the filter disable becomes allowed (0 = no wait). */
+    private static long getReadyAt(Context context) {
+        return BreakPrefs.get(context).getLong(BreakPrefs.KEY_CF_PENDING_READY_AT, 0L);
+    }
+
+    /** Epoch-ms when the 12h auto-on timer fires (0 = no timer). */
+    private static long getAutoOnAt(Context context) {
+        return BreakPrefs.get(context).getLong(BreakPrefs.KEY_CF_AUTO_ON_AT, 0L);
+    }
+
+    private static void clearWait(Context context, String reason) {
+        BreakPrefs.get(context).edit()
+                .putLong(BreakPrefs.KEY_CF_PENDING_DISABLE_AT, 0L)
+                .putLong(BreakPrefs.KEY_CF_PENDING_READY_AT, 0L)
+                .apply();
+        Log.d(TAG, "wait cleared (" + reason + ")");
+    }
+
+    private static void clearAutoOn(Context context, String reason) {
+        BreakPrefs.get(context).edit()
+                .putLong(BreakPrefs.KEY_CF_AUTO_ON_AT, 0L)
+                .apply();
+        Log.d(TAG, "auto-on cleared (" + reason + ")");
+    }
+
+    /**
+     * Lazily re-enables the content filter if the 12h auto-on timer has elapsed.
+     * Called at the start of every state read so blocking resumes passively — no
+     * AlarmManager, no background service.
+     */
+    private static void maybeAutoReenable(Context context) {
+        if (BreakPrefs.isContentFilterEnabled(context)) return;
+        long autoOnAt = getAutoOnAt(context);
+        if (autoOnAt <= 0) return;
+        if (System.currentTimeMillis() < autoOnAt) return;
+        BreakPrefs.setContentFilterEnabled(context, true);
+        clearAutoOn(context, "12h auto-on elapsed — filter re-enabled");
+        Log.d(TAG, "content filter auto-re-enabled after 12h");
+    }
+
+    // ── Public state ──────────────────────────────────────────────────────────
+
+    /** Whether the double-safe guard feature is currently enabled. */
     public static boolean isDoubleSafeEnabled(Context context) {
         return BreakPrefs.get(context).getBoolean(BreakPrefs.KEY_CF_DOUBLE_SAFE_ENABLED, false);
     }
 
     /**
-     * Enables/disables the guard. Disabling is REFUSED while a pending disable is
-     * in flight — otherwise flipping this toggle off would shortcut the wait.
-     *
-     * @return true if the write happened, false if refused.
-     */
-    public static boolean setDoubleSafeEnabled(Context context, boolean enabled) {
-        if (!enabled && getPendingDisableAt(context) > 0) {
-            Log.w(TAG, "setDoubleSafeEnabled(false) refused — pending disable in flight");
-            return false;
-        }
-        BreakPrefs.get(context).edit()
-                .putBoolean(BreakPrefs.KEY_CF_DOUBLE_SAFE_ENABLED, enabled)
-                .apply();
-        Log.d(TAG, "setDoubleSafeEnabled=" + enabled);
-        return true;
-    }
-
-    // ── Pending-disable timestamps ─────────────────────────────────────────────
-
-    private static long getPendingDisableAt(Context context) {
-        return BreakPrefs.get(context).getLong(BreakPrefs.KEY_CF_PENDING_DISABLE_AT, 0L);
-    }
-
-    private static long getPendingReadyAt(Context context) {
-        return BreakPrefs.get(context).getLong(BreakPrefs.KEY_CF_PENDING_READY_AT, 0L);
-    }
-
-    private static void clearPending(Context context, String reason) {
-        BreakPrefs.get(context).edit()
-                .putLong(BreakPrefs.KEY_CF_PENDING_DISABLE_AT, 0L)
-                .putLong(BreakPrefs.KEY_CF_PENDING_READY_AT, 0L)
-                .apply();
-        Log.d(TAG, "pending disable cleared (" + reason + ")");
-    }
-
-    /**
-     * Confirm-window length: always {@link BreakPrefs#CF_INTERNAL_CONFIRM_WINDOW_MS} (4h).
-     */
-    public static long getConfirmWindowMs(Context context) {
-        return BreakPrefs.CF_INTERNAL_CONFIRM_WINDOW_MS;
-    }
-
-    // ── State machine ──────────────────────────────────────────────────────────
-
-    /**
-     * Current state name. Lazily discards an expired pending disable (the
-     * automatic "re-instill the first barrier" behavior).
+     * Current guard state. Applies the lazy auto-reenable on every call, so
+     * both the Customize screen and BrowserBarContentFilter always see accurate
+     * blocking state without needing an explicit polling alarm.
      */
     public static String getState(Context context) {
-        if (!BreakPrefs.isContentFilterEnabled(context)) return STATE_DISABLED;
-        if (!isDoubleSafeEnabled(context)) return STATE_OFF_GUARD;
-        long pendingAt = getPendingDisableAt(context);
-        if (pendingAt <= 0) return STATE_PROTECTED;
+        maybeAutoReenable(context);
+
+        boolean filterEnabled = BreakPrefs.isContentFilterEnabled(context);
+
+        if (!filterEnabled) {
+            long autoOnAt = getAutoOnAt(context);
+            if (autoOnAt > 0) return STATE_TEMP_OFF;
+            return STATE_DISABLED;
+        }
+
+        boolean doubleSafe = isDoubleSafeEnabled(context);
+        long readyAt = getReadyAt(context);
+
+        if (doubleSafe) {
+            // Guard is on; any stale wait timestamps are ignored.
+            return STATE_PROTECTED;
+        }
+
+        if (readyAt <= 0) {
+            // Guard off, no wait in progress — filter freely editable.
+            return STATE_GUARD_OFF;
+        }
+
         long now = System.currentTimeMillis();
-        long readyAt = getPendingReadyAt(context);
-        if (now < readyAt) return STATE_PENDING_WAIT;
-        if (now < readyAt + getConfirmWindowMs(context)) return STATE_CONFIRM_WINDOW;
-        // Confirm window expired untouched → auto re-instate the first barrier.
-        clearPending(context, "confirm window expired — barrier re-instated");
-        return STATE_PROTECTED;
+        if (now < readyAt) return STATE_LAYER_OFF_WAIT;
+        return STATE_LAYER_OFF_READY;
     }
 
     /**
-     * Step 1 of the double-safe disable. Only valid from PROTECTED. Stamps
-     * readyAt = now + settings-lock duration (captured now, so a later duration
-     * change never shifts an in-flight wait).
+     * Enable or disable Double-safe.
      *
-     * @return true if the request was accepted.
+     * Enabling (true): always instant if the filter is on. Clears any pending
+     *   wait, returning to PROTECTED.
+     *
+     * Disabling (false): only valid from PROTECTED. Writes the wait timestamps
+     *   (readyAt = now + SettingsLockManager duration) and immediately succeeds.
+     *   Refused from LAYER_OFF_WAIT/LAYER_OFF_READY (wait already running).
+     *   Refused when the filter is already off.
+     *
+     * @return true if the change was applied.
      */
-    public static boolean requestDisable(Context context) {
+    public static boolean setDoubleSafeEnabled(Context context, boolean enabled) {
+        if (enabled) {
+            if (!BreakPrefs.isContentFilterEnabled(context)) {
+                Log.w(TAG, "setDoubleSafeEnabled(true) refused — filter is off");
+                return false;
+            }
+            BreakPrefs.get(context).edit()
+                    .putBoolean(BreakPrefs.KEY_CF_DOUBLE_SAFE_ENABLED, true)
+                    .apply();
+            if (getLayerOffAt(context) > 0) {
+                clearWait(context, "double-safe re-enabled — wait cancelled");
+            }
+            Log.d(TAG, "setDoubleSafeEnabled=true → PROTECTED");
+            return true;
+        }
+
+        // Turning OFF: only valid from PROTECTED.
         String state = getState(context);
         if (!STATE_PROTECTED.equals(state)) {
-            Log.w(TAG, "requestDisable refused — state=" + state);
+            Log.w(TAG, "setDoubleSafeEnabled(false) refused — state=" + state);
             return false;
         }
         long now = System.currentTimeMillis();
         long readyAt = now + SettingsLockManager.getDurationMs(context);
         BreakPrefs.get(context).edit()
+                .putBoolean(BreakPrefs.KEY_CF_DOUBLE_SAFE_ENABLED, false)
                 .putLong(BreakPrefs.KEY_CF_PENDING_DISABLE_AT, now)
                 .putLong(BreakPrefs.KEY_CF_PENDING_READY_AT, readyAt)
                 .apply();
-        Log.d(TAG, "requestDisable accepted — readyAt=" + readyAt);
+        Log.d(TAG, "setDoubleSafeEnabled=false → LAYER_OFF_WAIT; readyAt=" + readyAt);
         return true;
     }
 
     /**
-     * Step 2 of the double-safe disable. Only valid inside CONFIRM_WINDOW.
-     * Actually flips {@code content_filter_enabled} off.
-     *
-     * @return true if the filter was disabled.
-     */
-    public static boolean confirmDisable(Context context) {
-        String state = getState(context);
-        if (!STATE_CONFIRM_WINDOW.equals(state)) {
-            Log.w(TAG, "confirmDisable refused — state=" + state);
-            return false;
-        }
-        clearPending(context, "disable confirmed");
-        BreakPrefs.setContentFilterEnabled(context, false);
-        Log.d(TAG, "content filter DISABLED via double-safe confirm");
-        return true;
-    }
-
-    /** Cancels an in-flight pending disable. Always allowed, always instant. */
-    public static void cancelDisable(Context context) {
-        clearPending(context, "cancelled by user");
-    }
-
-    /** Re-enabling the filter is instant; also discards any pending disable. */
-    public static void onFilterEnabled(Context context) {
-        if (getPendingDisableAt(context) > 0) {
-            clearPending(context, "filter re-enabled");
-        }
-    }
-
-    /**
-     * Whether a DIRECT disable (the plain switch) is allowed. False while the
-     * guard is on — the two-step flow is then the only way to turn the filter off.
+     * Whether a direct content-filter disable is permitted right now.
+     * Only true from LAYER_OFF_READY (Double-safe off and wait complete).
+     * From GUARD_OFF the filter is also freely editable — but that case is
+     * handled by the absence of the guard entirely. This gate is specifically
+     * for the two-layer path.
      */
     public static boolean isDirectDisableAllowed(Context context) {
-        return !isDoubleSafeEnabled(context);
+        String state = getState(context);
+        return STATE_GUARD_OFF.equals(state) || STATE_LAYER_OFF_READY.equals(state);
     }
 
     /**
-     * Full guard state as a flat JSON string for the bridge:
-     * {@code {"doubleSafeEnabled":bool,"filterEnabled":bool,"state":str,
-     *   "pendingDisableAt":epochMs,"readyAt":epochMs,"confirmWindowMs":ms,
-     *   "confirmEndsAt":epochMs,"now":epochMs}}.
-     * {@code now} lets the JS layer offset device-clock drift when ticking.
+     * Called by SettingsModule after successfully disabling the filter from
+     * LAYER_OFF_READY. Sets the 12h auto-on timer and clears wait timestamps.
+     */
+    public static void onFilterDisabled(Context context) {
+        long autoOnAt = System.currentTimeMillis() + BreakPrefs.CF_AUTO_ON_MS;
+        BreakPrefs.get(context).edit()
+                .putLong(BreakPrefs.KEY_CF_AUTO_ON_AT, autoOnAt)
+                .apply();
+        clearWait(context, "filter disabled from LAYER_OFF_READY — auto-on timer set");
+        Log.d(TAG, "filter disabled; auto-on at " + autoOnAt
+                + " (in " + (BreakPrefs.CF_AUTO_ON_MS / 60_000) + " min)");
+    }
+
+    /**
+     * Called by SettingsModule when the filter is turned ON (re-enabled manually
+     * or via any direct enable path). Clears the auto-on timer and stale wait.
+     */
+    public static void onFilterEnabled(Context context) {
+        if (getAutoOnAt(context) > 0) {
+            clearAutoOn(context, "filter manually re-enabled");
+        }
+        if (getLayerOffAt(context) > 0) {
+            clearWait(context, "filter re-enabled — stale wait cleared");
+        }
+    }
+
+    /**
+     * Full guard state as a JSON string for the React Native bridge.
+     * Fields: doubleSafeEnabled, filterEnabled, state, layerOffAt, readyAt,
+     *   autoOnAt, now.
+     * The JS layer uses these to tick countdowns without native round-trips.
      */
     public static String getStateJson(Context context) {
-        String state = getState(context); // may lazily clear expired pending
-        long pendingAt = getPendingDisableAt(context);
-        long readyAt = getPendingReadyAt(context);
-        long confirmWindowMs = getConfirmWindowMs(context);
+        String state = getState(context); // applies lazy auto-reenable
         JSONObject out = new JSONObject();
         try {
             out.put("doubleSafeEnabled", isDoubleSafeEnabled(context));
             out.put("filterEnabled", BreakPrefs.isContentFilterEnabled(context));
             out.put("state", state);
-            out.put("pendingDisableAt", pendingAt);
-            out.put("readyAt", readyAt);
-            out.put("confirmWindowMs", confirmWindowMs);
-            out.put("confirmEndsAt", readyAt > 0 ? readyAt + confirmWindowMs : 0L);
+            out.put("layerOffAt", getLayerOffAt(context));
+            out.put("readyAt", getReadyAt(context));
+            out.put("autoOnAt", getAutoOnAt(context));
             out.put("now", System.currentTimeMillis());
         } catch (JSONException e) {
             Log.w(TAG, "getStateJson failed: " + e.getMessage());

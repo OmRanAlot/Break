@@ -4,24 +4,39 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 
 /**
- * Detects when the user is on the Android Settings App Info / uninstall screen for Break.
+ * Detects when the user is about to uninstall Break — covers the App Info screen
+ * in Settings AND the system uninstall-confirm dialog shown by packageinstaller.
  *
- * Detection requires ALL three conditions:
- *   1. This app's identity appears in the node tree (case-insensitive) — either its
- *      launcher label (@string/app_name) or its package id. Both are resolved at
- *      runtime from Context, never hardcoded, so renaming the app or its
- *      applicationId cannot silently disable deletion prevention.
- *   2. "uninstall" appears in the node tree (case-insensitive)
- *   3. At least one App Info marker is present ("force stop", "storage", "notifications",
- *      "app info", "open by default") — rules out Settings search results where "Break"
- *      appears as a list item but the Uninstall button isn't actually on screen.
+ * Detection requires BOTH conditions in the same window:
+ *   1. "uninstall" appears in the node tree (case-insensitive)
+ *   2. This app's identity appears in the node tree — either its launcher label
+ *      (word-boundary match) or its package id (substring). Both are resolved at
+ *      runtime from Context and cached, so renaming the app cannot silently disable
+ *      the feature.
  *
- * BFS is bounded to MAX_NODES to avoid OOM on dense OEM Settings trees.
+ * The former third requirement (App Info marker: force stop / storage / …) has been
+ * removed because the uninstall-confirm dialog shown by packageinstaller never
+ * contains those markers, causing 100% miss rate for that flow.
+ *
+ * Packages watched:
+ *   com.android.settings               — App Info page
+ *   com.android.packageinstaller       — AOSP uninstall confirm
+ *   com.google.android.packageinstaller — Pixel / GMS uninstall confirm
+ *   com.samsung.android.packageinstaller — Samsung uninstall confirm
+ *   com.android.vending                — Play Store uninstall
+ *
+ * com.Break is explicitly excluded: Customize contains the word "uninstall" and
+ * would otherwise self-trigger.
+ *
+ * BFS is bounded to MAX_NODES and recycles every child node to prevent leaks.
  *
  * Log filter: adb logcat -s REELS_WATCH | findstr "UNINSTALL_WATCH"
  */
@@ -30,12 +45,18 @@ public class UninstallScreenDetector {
     private static final String TAG = "REELS_WATCH";
 
     // BFS cap — prevents OOM on dense OEM Settings accessibility trees
-    private static final int MAX_NODES = 500;
+    private static final int MAX_NODES = 800;
 
-    // App Info markers: at least one must be present to confirm we're on the App Info page.
-    // The uninstall-confirm dialog itself may not contain all of these, but the App Info
-    // page that launches it always does. OEM translations may vary — expand this list if
-    // false negatives appear on Samsung/Xiaomi. All lowercased for case-insensitive match.
+    /** Packages whose accessibility events trigger an uninstall-screen scan. */
+    private static final String[] WATCH_PACKAGES = {
+            "com.android.settings",
+            "com.android.packageinstaller",
+            "com.google.android.packageinstaller",
+            "com.samsung.android.packageinstaller",
+            "com.android.vending",
+    };
+
+    // App Info markers retained only for optional debug logging (no longer required).
     private static final String[] APP_INFO_MARKERS = {
             "force stop",
             "storage",
@@ -46,25 +67,56 @@ public class UninstallScreenDetector {
     };
 
     // Lowercased identity tokens for this app (launcher label + package id), resolved
-    // once from Context on first use. Both are stable for the process lifetime, and
-    // this method runs on every debounced Settings event, so the PackageManager
-    // lookup is cached rather than repeated. Volatile: written on the accessibility
-    // event thread, and a benign duplicate computation on a race is harmless.
+    // once from Context on first use. Volatile: written on the accessibility event
+    // thread; a benign duplicate computation on a race is harmless.
     private static volatile String[] identityTokens;
 
     /**
-     * Returns true if the accessibility tree rooted at {@code root} looks like the
-     * Break App Info / uninstall screen in Android Settings.
-     *
-     * @param ctx  used to resolve this app's label and package id at runtime
-     * @param root safe to pass null or a recycled root (returns false)
+     * Returns true if {@code packageName} is one of the packages we scan for the
+     * uninstall screen. Call this before committing to a full tree scan.
      */
-    public static boolean isOnBreakUninstallScreen(Context ctx, AccessibilityNodeInfo root) {
-        if (root == null || ctx == null) return false;
+    public static boolean isUninstallWatchPackage(String packageName) {
+        if (packageName == null) return false;
+        for (String p : WATCH_PACKAGES) {
+            if (p.equals(packageName)) return true;
+        }
+        return false;
+    }
 
+    /**
+     * Scans ALL interactive windows visible in the given window list (from
+     * {@code getWindows()}) for a Break uninstall screen.  Returns true as soon
+     * as one window matches.
+     *
+     * @param ctx     used to resolve identity tokens
+     * @param windows list from AccessibilityService.getWindows(); may be null/empty
+     */
+    public static boolean isOnBreakUninstallScreen(Context ctx,
+            List<AccessibilityWindowInfo> windows) {
+        if (ctx == null || windows == null || windows.isEmpty()) return false;
         String[] identity = resolveIdentityTokens(ctx);
+        for (AccessibilityWindowInfo win : windows) {
+            if (win == null) continue;
+            AccessibilityNodeInfo root = win.getRoot();
+            if (root == null) continue;
+            boolean hit = scanRoot(root, identity);
+            root.recycle();
+            if (hit) return true;
+        }
+        return false;
+    }
 
-        boolean hasBreak = false;
+    /**
+     * Scans a single accessibility tree root.  Kept package-private for unit tests;
+     * production code should prefer the window-list overload above.
+     *
+     * @param root     root node (caller owns its lifecycle — this method does NOT recycle it)
+     * @param identity lowercased identity tokens from {@link #resolveIdentityTokens}
+     */
+    static boolean scanRoot(AccessibilityNodeInfo root, String[] identity) {
+        if (root == null || identity == null) return false;
+
+        boolean hasIdentity = false;
         boolean hasUninstall = false;
         boolean hasAppInfoMarker = false;
 
@@ -78,11 +130,12 @@ public class UninstallScreenDetector {
 
             String text = collectText(node);
             if (!text.isEmpty()) {
-                if (!hasBreak) {
+                if (!hasIdentity) {
                     for (String token : identity) {
-                        if (text.contains(token)) {
-                            hasBreak = true;
-                            Log.d(TAG, "[UNINSTALL_WATCH] Found app identity '" + token + "' in node text='" + text + "'");
+                        if (matchesIdentity(text, token)) {
+                            hasIdentity = true;
+                            Log.d(TAG, "[UNINSTALL_WATCH] Found app identity '" + token
+                                    + "' in node text='" + text + "'");
                             break;
                         }
                     }
@@ -95,26 +148,32 @@ public class UninstallScreenDetector {
                     for (String marker : APP_INFO_MARKERS) {
                         if (text.contains(marker)) {
                             hasAppInfoMarker = true;
-                            Log.d(TAG, "[UNINSTALL_WATCH] Found App Info marker '" + marker + "' in text='" + text + "'");
+                            Log.d(TAG, "[UNINSTALL_WATCH] Found App Info marker '" + marker
+                                    + "' in text='" + text + "'");
                             break;
                         }
                     }
                 }
             }
 
-            // Short-circuit once all three signals are found
-            if (hasBreak && hasUninstall && hasAppInfoMarker) break;
+            // Short-circuit once both required signals are found
+            if (hasIdentity && hasUninstall) break;
 
             int childCount = node.getChildCount();
             for (int i = 0; i < childCount; i++) {
                 AccessibilityNodeInfo child = node.getChild(i);
                 if (child != null) queue.add(child);
             }
+
+            // Recycle interior nodes (not the root — caller owns that).
+            if (node != root) {
+                node.recycle();
+            }
         }
 
-        boolean detected = hasBreak && hasUninstall && hasAppInfoMarker;
+        boolean detected = hasIdentity && hasUninstall;
         Log.d(TAG, "[UNINSTALL_WATCH] scan complete visited=" + visited
-                + " hasBreak=" + hasBreak
+                + " hasIdentity=" + hasIdentity
                 + " hasUninstall=" + hasUninstall
                 + " hasAppInfoMarker=" + hasAppInfoMarker
                 + " -> detected=" + detected);
@@ -122,17 +181,54 @@ public class UninstallScreenDetector {
     }
 
     /**
-     * Resolves this app's lowercased identity tokens: the launcher label
-     * (@string/app_name) and the package id. Result is cached in {@link #identityTokens}.
+     * Pure text-list overload for JVM unit tests — no Android dependencies.
      *
-     * Matching on EITHER is deliberate. Most OEM App Info screens show the label in the
-     * header and the package id in the footer, but some show only one, and a localized
-     * build could change the label. The package id is the stable fallback.
-     *
-     * Both are lowercased to match {@link #collectText}, which lowercases node text —
-     * a mixed-case literal here can never match and would silently disable the feature.
+     * @param nodeTexts lowercased strings gathered from accessibility nodes
+     * @param identity  tokens from {@link #buildIdentityTokens(String, String)}
+     * @return true if the list contains both an identity token and "uninstall"
      */
-    private static String[] resolveIdentityTokens(Context ctx) {
+    public static boolean matchesScreen(List<String> nodeTexts, String[] identity) {
+        boolean hasIdentity = false;
+        boolean hasUninstall = false;
+        for (String text : nodeTexts) {
+            if (text == null) continue;
+            if (!hasIdentity) {
+                for (String token : identity) {
+                    if (matchesIdentity(text, token)) {
+                        hasIdentity = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasUninstall && text.contains("uninstall")) {
+                hasUninstall = true;
+            }
+            if (hasIdentity && hasUninstall) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Builds identity tokens from explicit strings — used by tests to avoid
+     * needing a real Context/PackageManager.
+     *
+     * @param label  lowercased launcher label (may be null)
+     * @param pkg    lowercased package id
+     */
+    public static String[] buildIdentityTokens(String label, String pkg) {
+        if (label == null || label.isEmpty() || label.equals(pkg)) {
+            return new String[] { pkg };
+        }
+        return new String[] { label, pkg };
+    }
+
+    // ─── Internal helpers ────────────────────────────────────────────────────
+
+    /**
+     * Resolves this app's lowercased identity tokens: launcher label and package
+     * id.  Result is cached for the process lifetime.
+     */
+    public static String[] resolveIdentityTokens(Context ctx) {
         String[] cached = identityTokens;
         if (cached != null) return cached;
 
@@ -143,19 +239,39 @@ public class UninstallScreenDetector {
             CharSequence raw = ctx.getApplicationInfo().loadLabel(pm);
             if (raw != null && raw.length() > 0) label = raw.toString().trim().toLowerCase();
         } catch (Exception e) {
-            // Label lookup should never fail for our own package, but a null/odd
-            // PackageManager must not take the whole detector down — fall back to
-            // the package id, which is always available.
             Log.w(TAG, "[UNINSTALL_WATCH] loadLabel failed, falling back to package id", e);
         }
 
-        String[] tokens = (label == null || label.isEmpty() || label.equals(pkg))
-                ? new String[] { pkg }
-                : new String[] { label, pkg };
-
+        String[] tokens = buildIdentityTokens(label, pkg);
         Log.d(TAG, "[UNINSTALL_WATCH] app identity tokens=" + java.util.Arrays.toString(tokens));
         identityTokens = tokens;
         return tokens;
+    }
+
+    /**
+     * Returns true if {@code text} contains {@code token} as an identity match.
+     *
+     * For the launcher label we use a word-boundary check to avoid false positives
+     * (e.g. "breakfast" should not match the label "break"). The package id is a
+     * literal substring — package ids are unique and dotted, so partial matches
+     * are harmless.
+     *
+     * Both {@code text} and {@code token} are expected to be lowercased already.
+     */
+    private static boolean matchesIdentity(String text, String token) {
+        if (!text.contains(token)) return false;
+        // Package ids contain dots — treat as literal substring (no boundary needed).
+        if (token.contains(".")) return true;
+        // Label: verify word boundary on both sides.
+        int idx = text.indexOf(token);
+        while (idx >= 0) {
+            boolean leftOk = (idx == 0 || !Character.isLetterOrDigit(text.charAt(idx - 1)));
+            boolean rightOk = (idx + token.length() >= text.length()
+                    || !Character.isLetterOrDigit(text.charAt(idx + token.length())));
+            if (leftOk && rightOk) return true;
+            idx = text.indexOf(token, idx + 1);
+        }
+        return false;
     }
 
     /** Collects text and content description from a node into a single lowercased string. */

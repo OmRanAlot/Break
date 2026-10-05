@@ -249,6 +249,37 @@ export const styles = StyleSheet.create({
     color: L.charcoal,
     fontWeight: '600',
   },
+  deletionCountdown: {
+    marginTop: 22,
+    fontSize: 48,
+    lineHeight: 56,
+    fontWeight: '700',
+    color: L.charcoal,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  deletionCountdownCaption: {
+    minHeight: 20,
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 18,
+    color: L.muted,
+    textAlign: 'center',
+  },
+  deletionDisableButtonDisabled: {
+    opacity: 0.35,
+  },
+  deletionDisableIntro: {
+    marginBottom: 10,
+  },
+  deletionDisableInstruction: {
+    marginBottom: 4,
+  },
+  deletionDisableButtonText: {
+    fontSize: 16,
+    color: '#b91c1c',
+    fontWeight: '600',
+  },
   permissionHint: {
     marginTop: 10,
     paddingHorizontal: 12,

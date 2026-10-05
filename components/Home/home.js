@@ -88,6 +88,8 @@ const ModesIcon = ({ color, size }) => (
   </Svg>
 );
 
+const JournalIcon = ({ color, size }) => (<Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} viewBox="0 0 24 24"><Path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2V3z"/><Path d="M8 7h8M8 11h8M8 15h5"/></Svg>);
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 /** Single stat card shown in the summary row */
@@ -156,7 +158,7 @@ const AppUsageRow = ({ appName, usageTimeMin, totalMin }) => {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-const Home = ({ navigation }) => {
+const Home = ({ navigation, onSetup }) => {
   const insets = useSafeAreaInsets();
   const [isMonitoring, setIsMonitoring] = useState(false);
 
@@ -486,15 +488,7 @@ const Home = ({ navigation }) => {
         const savedApps = await new Promise(resolve => {
           SettingsModule.getBlockedApps(apps => resolve(apps));
         });
-        let appsSet = new Set(savedApps || []);
-        let updated = false;
-        ['com.instagram.android', 'com.google.android.youtube'].forEach(pkg => {
-          if (!appsSet.has(pkg)) {
-            appsSet.add(pkg);
-            updated = true;
-          }
-        });
-        if (updated) SettingsModule.saveBlockedApps(Array.from(appsSet));
+        const appsSet = new Set(savedApps || []);
 
         // Check if monitoring is enabled before starting — respects the
         // "App Open Intercept" toggle in Customize. Without this check,
@@ -513,7 +507,7 @@ const Home = ({ navigation }) => {
 
         // Sync widget if available
         if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
-          SettingsModule.updateWidgetStats(85, 45, 14, true);
+          SettingsModule.updateWidgetStats(85, 45, appsSet.size, monitoringEnabled !== false);
         }
       } catch (e) {
         console.error('[Home] init failed:', e);
@@ -572,6 +566,9 @@ const Home = ({ navigation }) => {
         <Text style={styles.appName}>Break</Text>
 
         <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.headerButton} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Reflections" onPress={() => navigation.navigate('Reflections')}>
+            <JournalIcon color={L.muted} size={21} />
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.headerButton}
             activeOpacity={0.7}
@@ -737,6 +734,7 @@ const Home = ({ navigation }) => {
 
         {/* ── Managed Apps list ─────────────────────────────────── */}
         <ManagedAppsList
+          onSetup={onSetup}
           appPolicies={appPolicies}
           onSelect={pkg =>
             navigation.navigate('AppDetail', { packageName: pkg })
