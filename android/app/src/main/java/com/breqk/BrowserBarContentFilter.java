@@ -137,8 +137,7 @@ public final class BrowserBarContentFilter {
             "e621.net", "e926.net", "furaffinity.net", "inkbunny.net", "luscious.net",
             "fakku.net", "tsumino.com", "pururin.to", "multporn.net", "allporncomic.com",
             "myhentaigallery.com",
-            "literotica.com", "chyoa.com", "sexstories.com", "lushstories.com", "asstr.org",
-            "reddit.com"));
+            "literotica.com", "chyoa.com", "sexstories.com", "lushstories.com", "asstr.org"));
 
     private static final Map<String, String[]> BROWSER_URL_IDS = new HashMap<>();
 
@@ -708,12 +707,29 @@ public final class BrowserBarContentFilter {
     /**
      * Matches a blocked hostname, or a search whose query is a restricted term.
      * Page body text is never scanned.
+     *
+     * <p>Reddit is treated specially: the hostname is never blocked outright.
+     * Instead, {@link BlockedSearch#matchRedditUrl} is consulted and only matches
+     * when the URL's subreddit name, site-search query, or post-title slug contains
+     * a term from the STEMS / WORDS / PHRASES lists.
      */
     private static String findBlockedDomain(String urlOrHost) {
         if (TextUtils.isEmpty(urlOrHost))
             return null;
 
         String hostParsed = hostFromBarText(urlOrHost);
+
+        // Reddit conditional check — never block by host alone.
+        if (hostParsed != null && BlockedSearch.isRedditHost(hostParsed)) {
+            String redditMatch = BlockedSearch.matchRedditUrl(urlOrHost);
+            if (redditMatch != null) {
+                Log.d(TAG, "  [REDDIT_TERM_MATCH] rule=" + redditMatch + " host=" + hostParsed);
+            } else {
+                Log.d(TAG, "  [REDDIT_ALLOW] no restricted term in URL host=" + hostParsed);
+            }
+            return redditMatch;
+        }
+
         if (hostParsed != null) {
             for (String domain : BLOCKED_DOMAINS) {
                 String dl = domain.toLowerCase(Locale.US);

@@ -48,6 +48,157 @@ public final class BlockedSearch {
     private BlockedSearch() {
     }
 
+    // ── Reddit conditional matching ───────────────────────────────────────────
+
+    /**
+     * Returns true if {@code hostLower} is reddit.com or any subdomain of reddit.com
+     * (e.g. {@code www.reddit.com}, {@code old.reddit.com}, {@code np.reddit.com}).
+     * Also matches the {@code redd.it} short-link host so redirects are covered.
+     */
+    public static boolean isRedditHost(String hostLower) {
+        if (hostLower == null) return false;
+        return "reddit.com".equals(hostLower)
+                || hostLower.endsWith(".reddit.com")
+                || "redd.it".equals(hostLower)
+                || hostLower.endsWith(".redd.it");
+    }
+
+    /**
+     * Checks whether a Reddit URL path/query contains a term from the STEMS, WORDS,
+     * or PHRASES lists.
+     *
+     * <p>Inspects three URL-derived text sources:
+     * <ol>
+     *   <li>The {@code q} query parameter (Reddit site search).</li>
+     *   <li>The first path segment after {@code /r/} (subreddit name).</li>
+     *   <li>The first path segment after {@code /comments/{id}/} (post-title slug).</li>
+     * </ol>
+     *
+     * <p>Each source is passed through {@link #matchTerm} with the same STEMS/WORDS/PHRASES.
+     * Note: substring STEMS can match inside subreddit names (e.g. {@code unixporn} matches
+     * the stem {@code porn}) — this is intentional.
+     *
+     * @param urlOrHost Raw omnibar text (full URL or bare host).
+     * @return A short label like {@code "Reddit: porn"} or {@code "Reddit search: sex"},
+     *         or {@code null} if no restricted term is found or the host is not Reddit.
+     */
+    public static String matchRedditUrl(String urlOrHost) {
+        if (urlOrHost == null || urlOrHost.trim().isEmpty()) return null;
+
+        String s = urlOrHost.trim();
+        // Normalise to a parseable URL
+        if (!s.contains("://")) s = "http://" + s;
+
+        // Parse without android.net.Uri (pure-JVM compatibility for unit tests)
+        int schemeEnd = s.indexOf("://");
+        String rest = schemeEnd >= 0 ? s.substring(schemeEnd + 3) : s;
+
+        // Strip userinfo
+        int at = rest.lastIndexOf('@');
+        if (at >= 0) rest = rest.substring(at + 1);
+
+        // Separate host from path?query#fragment
+        int slashIdx = rest.indexOf('/');
+        int queryIdx = rest.indexOf('?');
+        String hostPort;
+        String pathAndQuery;
+        if (slashIdx >= 0) {
+            hostPort = rest.substring(0, slashIdx);
+            pathAndQuery = rest.substring(slashIdx);
+        } else if (queryIdx >= 0) {
+            hostPort = rest.substring(0, queryIdx);
+            pathAndQuery = "?" + rest.substring(queryIdx + 1);
+        } else {
+            hostPort = rest;
+            pathAndQuery = "";
+        }
+
+        // Strip port
+        int bracketEnd = hostPort.indexOf(']');
+        String host;
+        if (hostPort.startsWith("[") && bracketEnd >= 0) {
+            host = hostPort.substring(1, bracketEnd).toLowerCase(Locale.US);
+        } else {
+            int colon = hostPort.lastIndexOf(':');
+            host = (colon > 0 ? hostPort.substring(0, colon) : hostPort).toLowerCase(Locale.US);
+        }
+        if (!isRedditHost(host)) return null;
+
+        // Strip fragment
+        int hashIdx = pathAndQuery.indexOf('#');
+        if (hashIdx >= 0) pathAndQuery = pathAndQuery.substring(0, hashIdx);
+
+        // Separate path and query string
+        int qMark = pathAndQuery.indexOf('?');
+        String path = qMark >= 0 ? pathAndQuery.substring(0, qMark) : pathAndQuery;
+        String queryString = qMark >= 0 ? pathAndQuery.substring(qMark + 1) : "";
+
+        // 1. Reddit search: ?q=...
+        if (!queryString.isEmpty()) {
+            String encoded = firstQueryParam(queryString, "q");
+            if (encoded != null && !encoded.isEmpty()) {
+                String query = urlDecode(encoded).trim();
+                String term = matchTerm(query);
+                if (term != null) return "Reddit search: " + term;
+            }
+        }
+
+        // 2. Subreddit name: /r/<name>
+        String subreddit = extractSegmentAfter(path, "/r/");
+        if (subreddit != null) {
+            String term = matchTerm(subreddit);
+            if (term != null) return "Reddit: " + term;
+        }
+
+        // 3. Post-title slug: /comments/<id>/<slug>
+        String postSlug = extractPostTitleSlug(path);
+        if (postSlug != null) {
+            // Slugs use hyphens; convert to spaces before matching
+            String term = matchTerm(postSlug.replace('-', ' '));
+            if (term != null) return "Reddit post: " + term;
+        }
+
+        return null;
+    }
+
+    /**
+     * Returns the path segment immediately after {@code prefix} (stopping at the next
+     * {@code /} if present), or {@code null} if the prefix is not in the path.
+     */
+    private static String extractSegmentAfter(String path, String prefix) {
+        if (path == null) return null;
+        String lower = path.toLowerCase(Locale.US);
+        int idx = lower.indexOf(prefix.toLowerCase(Locale.US));
+        if (idx < 0) return null;
+        int start = idx + prefix.length();
+        if (start >= path.length()) return null;
+        int end = path.indexOf('/', start);
+        String seg = end >= 0 ? path.substring(start, end) : path.substring(start);
+        return seg.isEmpty() ? null : seg;
+    }
+
+    /**
+     * Extracts the post-title slug (4th path segment) from a Reddit post URL of the form
+     * {@code /r/<sub>/comments/<id>/<slug>}.
+     * Returns {@code null} if the path does not match that structure.
+     */
+    private static String extractPostTitleSlug(String path) {
+        if (path == null) return null;
+        // Normalise lower-case for prefix check
+        String lp = path.toLowerCase(Locale.US);
+        // Path segments: /r/<sub>/comments/<id>/<slug>[/...]
+        int commentsIdx = lp.indexOf("/comments/");
+        if (commentsIdx < 0) return null;
+        int afterComments = commentsIdx + "/comments/".length();
+        // skip <id>
+        int nextSlash = path.indexOf('/', afterComments);
+        if (nextSlash < 0 || nextSlash + 1 >= path.length()) return null;
+        int slugStart = nextSlash + 1;
+        int slugEnd = path.indexOf('/', slugStart);
+        String slug = slugEnd >= 0 ? path.substring(slugStart, slugEnd) : path.substring(slugStart);
+        return slug.isEmpty() ? null : slug;
+    }
+
     /**
      * @return a short rule label, or null when the text is not a restricted search
      */

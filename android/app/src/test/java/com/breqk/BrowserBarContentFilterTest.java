@@ -2,13 +2,140 @@ package com.Break;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 
 import org.junit.Test;
 
 /**
- * Pure JVM tests for search-query blocking. No Android dependencies.
+ * Pure JVM tests for search-query blocking and Reddit conditional matching.
+ * No Android dependencies.
  */
 public class BrowserBarContentFilterTest {
+
+    // ── Reddit: host predicate ────────────────────────────────────────────────
+
+    @Test
+    public void redditHost_standardSubdomains() {
+        assertTrue(BlockedSearch.isRedditHost("reddit.com"));
+        assertTrue(BlockedSearch.isRedditHost("www.reddit.com"));
+        assertTrue(BlockedSearch.isRedditHost("old.reddit.com"));
+        assertTrue(BlockedSearch.isRedditHost("np.reddit.com"));
+        assertTrue(BlockedSearch.isRedditHost("redd.it"));
+    }
+
+    @Test
+    public void redditHost_nonReddit() {
+        assertNull(BlockedSearch.matchRedditUrl("https://www.google.com/search?q=porn"));
+        assertNull(BlockedSearch.matchRedditUrl("https://pornhub.com/"));
+    }
+
+    // ── Reddit: allow benign URLs ─────────────────────────────────────────────
+
+    @Test
+    public void reddit_allowHomePage() {
+        assertNull(BlockedSearch.matchRedditUrl("https://www.reddit.com/"));
+        assertNull(BlockedSearch.matchRedditUrl("reddit.com"));
+        assertNull(BlockedSearch.matchRedditUrl("https://old.reddit.com/"));
+    }
+
+    @Test
+    public void reddit_allowBenignSubreddits() {
+        assertNull(BlockedSearch.matchRedditUrl("https://www.reddit.com/r/technology"));
+        assertNull(BlockedSearch.matchRedditUrl("https://old.reddit.com/r/programming"));
+        assertNull(BlockedSearch.matchRedditUrl("https://reddit.com/r/androiddev/"));
+        assertNull(BlockedSearch.matchRedditUrl("https://reddit.com/r/AskReddit"));
+    }
+
+    @Test
+    public void reddit_allowBenignSearchQueries() {
+        assertNull(BlockedSearch.matchRedditUrl("https://www.reddit.com/search/?q=best+pizza+recipe"));
+        assertNull(BlockedSearch.matchRedditUrl("https://reddit.com/search/?q=javascript+tutorial"));
+    }
+
+    // ── Reddit: block restricted subreddits ───────────────────────────────────
+
+    @Test
+    public void reddit_blockNsfwSubreddit() {
+        assertEquals("Reddit: nsfw", BlockedSearch.matchRedditUrl("https://reddit.com/r/nsfw"));
+        assertEquals("Reddit: nsfw", BlockedSearch.matchRedditUrl("https://www.reddit.com/r/nsfw/"));
+        assertEquals("Reddit: nsfw", BlockedSearch.matchRedditUrl("https://old.reddit.com/r/nsfw/"));
+    }
+
+    @Test
+    public void reddit_blockPornSubreddit() {
+        assertEquals("Reddit: porn", BlockedSearch.matchRedditUrl("https://reddit.com/r/porn"));
+        assertEquals("Reddit: porn", BlockedSearch.matchRedditUrl("https://reddit.com/r/gonewild+porn"));
+    }
+
+    @Test
+    public void reddit_blockHentaiSubreddit() {
+        assertEquals("Reddit: hentai", BlockedSearch.matchRedditUrl("https://reddit.com/r/hentai"));
+    }
+
+    // ── Reddit: block restricted search queries ───────────────────────────────
+
+    @Test
+    public void reddit_blockSiteSearchPorn() {
+        assertEquals("Reddit search: porn",
+                BlockedSearch.matchRedditUrl("https://reddit.com/search/?q=porn"));
+        assertEquals("Reddit search: porn",
+                BlockedSearch.matchRedditUrl("https://www.reddit.com/search/?q=free+porn"));
+    }
+
+    @Test
+    public void reddit_blockSiteSearchSex() {
+        assertEquals("Reddit search: sex",
+                BlockedSearch.matchRedditUrl("https://reddit.com/search/?q=sex"));
+        assertEquals("Reddit search: nude",
+                BlockedSearch.matchRedditUrl("https://old.reddit.com/search/?q=nude+pics"));
+    }
+
+    @Test
+    public void reddit_blockSiteSearchEncodedQuery() {
+        assertEquals("Reddit search: porn",
+                BlockedSearch.matchRedditUrl("https://reddit.com/search/?q=free%20porn%20videos"));
+    }
+
+    // ── Reddit: block post-title slugs ────────────────────────────────────────
+
+    @Test
+    public void reddit_blockPostTitleSlug() {
+        // /r/<sub>/comments/<id>/<slug>
+        assertEquals("Reddit post: porn",
+                BlockedSearch.matchRedditUrl(
+                        "https://reddit.com/r/videos/comments/abc123/some_porn_video_title/"));
+        assertEquals("Reddit post: nsfw",
+                BlockedSearch.matchRedditUrl(
+                        "https://reddit.com/r/all/comments/xyz789/nsfw_content_here/"));
+    }
+
+    @Test
+    public void reddit_allowBenignPostTitleSlug() {
+        assertNull(BlockedSearch.matchRedditUrl(
+                "https://reddit.com/r/technology/comments/abc123/cool_new_gadget_review/"));
+    }
+
+    // ── Regression: existing Google/engine search tests still pass ────────────
+
+    @Test
+    public void regression_googleSearchPorn() {
+        assertEquals("Google search: porn",
+                BlockedSearch.match("https://www.google.com/search?q=porn"));
+    }
+
+    @Test
+    public void regression_googleAllowBenign() {
+        assertNull(BlockedSearch.match("https://www.google.com/search?q=best+pizza+recipe"));
+    }
+
+    @Test
+    public void regression_reddit_notInBlockedDomainsBlanket() {
+        // matchRedditUrl for a benign URL must return null (no blanket block)
+        assertNull(BlockedSearch.matchRedditUrl("https://reddit.com/r/technology"));
+        // match() should NOT flag reddit.com home as a blocked domain (it was removed)
+        assertNull(BlockedSearch.match("https://reddit.com/"));
+    }
 
     @Test
     public void googleSearch_porn() {
