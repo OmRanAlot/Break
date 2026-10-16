@@ -15,6 +15,7 @@ const WHAT_IT_DOES = [
   'Uses the accessibility service you already granted to notice when you open Break’s App Info / uninstall screen in Android Settings.',
   'Shows a full-screen pause for 60 seconds with reasons to keep going.',
   'After the 60 seconds you can continue — it never permanently stops you from uninstalling.',
+  'Optionally, you can require typing a phrase you choose (stored only on this device) before you can continue.',
 ];
 
 const RISKS = [

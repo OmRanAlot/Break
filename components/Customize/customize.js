@@ -1,4 +1,4 @@
-﻿/**
+/**
  * customize.js — Customize Screen (Break light design system)
  * ─────────────────────────────────────────────────────────────────────────────
  * Settings screen layout:
@@ -43,6 +43,7 @@ import InfoCircle from '../shared/InfoCircle';
 import { formatRemaining, GUARD_STATES } from '../shared/lockCycle';
 import ScrollBudgetSection from './ScrollBudgetSection';
 import DeletionInfoModal from './DeletionInfoModal';
+import DeletionPhraseSection from './DeletionPhraseSection';
 import DeletionDisablePauseModal from './DeletionDisablePauseModal';
 import ContentFilterDoubleSafeModal from './ContentFilterDoubleSafeModal';
 import ContentFilterBothLayersModal from './ContentFilterBothLayersModal';
@@ -89,6 +90,9 @@ const Customize = ({ navigation }) => {
   // Opt-in. When on, a 60s lock screen appears if the user opens the Break
   // uninstall screen in Android Settings.
   const [uninstallLockEnabled, setUninstallLockEnabled] = useState(false);
+  // Optional typed-phrase step after the pause (see DeletionPhraseSection).
+  const [phraseEnabled, setPhraseEnabled] = useState(false);
+  const [savedPhrase, setSavedPhrase] = useState('');
   // Confirmation modal shown before enabling deletion prevention, so the user
   // reads what it does, its limitations, and the privacy guarantee first.
   const [deletionInfoVisible, setDeletionInfoVisible] = useState(false);
@@ -220,6 +224,12 @@ const Customize = ({ navigation }) => {
       SettingsModule.getUninstallLockEnabled(enabled => {
         setUninstallLockEnabled(enabled);
         console.log('[Customize] uninstall_lock_enabled=', enabled);
+      });
+      // Load typed-phrase safeguard (toggle + phrase; phrase never logged)
+      SettingsModule.getUninstallPhraseConfig((toggle, phrase) => {
+        setPhraseEnabled(!!toggle);
+        setSavedPhrase(phrase || '');
+        console.log('[Customize] uninstall_phrase_enabled=', !!toggle);
       });
     } catch (e) {
       console.warn('[Customize] load settings error:', e);
@@ -447,6 +457,18 @@ const Customize = ({ navigation }) => {
     console.log('[Customize] deletion-prevention disable cancelled — keeping on');
     setDeletionDisablePauseVisible(false);
   }, []);
+
+  // Phrase section persisted a change natively — mirror it and show the toast.
+  // (Phrase value is never logged.)
+  const handlePhraseSaved = useCallback(
+    (nextEnabled, nextPhrase) => {
+      console.log('[Customize] deletion phrase requirement →', nextEnabled);
+      setPhraseEnabled(nextEnabled);
+      setSavedPhrase(nextPhrase || '');
+      showSaved();
+    },
+    [showSaved],
+  );
 
   // Human-readable Settings Change Lock duration for modal copy.
   const lockDurationLabel = (() => {
@@ -706,6 +728,14 @@ const Customize = ({ navigation }) => {
               accessibilityLabel="Prevent deletion"
             />
           </View>
+
+          {/* Optional typed phrase required after the 60s pause */}
+          <DeletionPhraseSection
+            parentEnabled={uninstallLockEnabled}
+            enabled={phraseEnabled}
+            savedPhrase={savedPhrase}
+            onSaved={handlePhraseSaved}
+          />
         </View>
 
         <Text style={styles.footer}>v1.0 • Minimal Design</Text>

@@ -13,6 +13,7 @@ import android.view.WindowManager;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.TextView;
 
 import com.Break.R;
@@ -154,6 +155,8 @@ public class UninstallLockOverlay {
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.OPAQUE);
             params.gravity = Gravity.CENTER;
+            // Let the layout's ScrollView resize above the keyboard for phrase entry.
+            params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
 
             overlayView = LayoutInflater.from(context)
                     .inflate(R.layout.overlay_uninstall_lock, null);
@@ -162,6 +165,12 @@ public class UninstallLockOverlay {
             final Button homeBtn = overlayView.findViewById(R.id.uninstall_lock_home_btn);
             final Button keepBtn = overlayView.findViewById(R.id.uninstall_lock_keep_btn);
             final Button deleteBtn = overlayView.findViewById(R.id.uninstall_lock_delete_btn);
+            final TextView phrasePrompt = overlayView.findViewById(R.id.uninstall_lock_phrase_prompt);
+            final EditText phraseInput = overlayView.findViewById(R.id.uninstall_lock_phrase_input);
+            final TextView phraseError = overlayView.findViewById(R.id.uninstall_lock_phrase_error);
+            // Fresh instance: start with no typed text and no validation message.
+            phraseInput.setText("");
+            phraseError.setVisibility(View.GONE);
 
             // Seed the first message immediately.
             messageIndex = 0;
@@ -186,6 +195,19 @@ public class UninstallLockOverlay {
             });
 
             deleteBtn.setOnClickListener(v -> {
+                // AUTHORITATIVE phrase gate: re-read the toggle + phrase from prefs at
+                // click time (never trust view state). Neither value is logged.
+                if (BreakPrefs.isUninstallPhraseRequired(context)) {
+                    String typed = phraseInput.getText() != null
+                            ? phraseInput.getText().toString() : "";
+                    if (!UninstallPhrase.matches(BreakPrefs.getUninstallPhrase(context), typed)) {
+                        Log.i(TAG, "[UNINSTALL_WATCH] delete blocked — phrase mismatch");
+                        phraseInput.setText("");
+                        phraseError.setVisibility(View.VISIBLE);
+                        return;
+                    }
+                    Log.i(TAG, "[UNINSTALL_WATCH] phrase accepted");
+                }
                 Log.i(TAG, "[UNINSTALL_WATCH] 'delete anyway' tapped — suppressing reshow for "
                         + PROCEED_SUPPRESS_MS + "ms so the uninstall can proceed");
                 suppressUntilMs = System.currentTimeMillis() + PROCEED_SUPPRESS_MS;
@@ -223,6 +245,13 @@ public class UninstallLockOverlay {
                     return;
                 keepBtn.setVisibility(View.VISIBLE);
                 deleteBtn.setVisibility(View.VISIBLE);
+                // Optional typed-phrase step: evaluated when the wait elapses so a
+                // toggle change made mid-wait is honored. Enforcement still happens
+                // natively in the delete click handler above.
+                if (BreakPrefs.isUninstallPhraseRequired(context)) {
+                    phrasePrompt.setVisibility(View.VISIBLE);
+                    phraseInput.setVisibility(View.VISIBLE);
+                }
                 Log.d(TAG, "[UNINSTALL_WATCH] Wait elapsed — buttons revealed");
             };
             mainHandler.postDelayed(revealRunnable, BreakPrefs.UNINSTALL_LOCK_DURATION_MS);
@@ -280,6 +309,11 @@ public class UninstallLockOverlay {
 
         // Cancel any in-flight message animation so it doesn't touch a detached view.
         if (overlayView != null) {
+            // Never retain typed phrase text after the overlay goes away.
+            EditText phraseView = overlayView.findViewById(R.id.uninstall_lock_phrase_input);
+            if (phraseView != null) {
+                phraseView.setText("");
+            }
             TextView msgView = overlayView.findViewById(R.id.uninstall_lock_message);
             if (msgView != null) {
                 msgView.animate().cancel();

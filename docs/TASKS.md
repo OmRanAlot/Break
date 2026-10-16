@@ -366,6 +366,7 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | Scheduled modes (AlarmManager) | ✅ Working | ModeManager.java, ModeSchedulerReceiver.java | customize.js | Mode schedule JSON |
 | Browser adult content blocker | ✅ Working | ContentFilterService.java | — (no UI) | Hardcoded domain list |
 | Deletion prevention (uninstall pause overlay) | ✅ Working | UninstallScreenDetector.java, UninstallLockOverlay.java | customize.js (Prevent deletion toggle) | `uninstall_lock_enabled` |
+| Typed-phrase deletion safeguard (optional) | ✅ Implemented 2026-10-12 (device verification pending) | UninstallPhrase.java, UninstallLockOverlay.java, BreakPrefs.java, SettingsModule.java | DeletionPhraseSection.js ("Require phrase to delete") | `uninstall_phrase_enabled`, `uninstall_phrase` (never logged) |
 | 24-hour Uninstall Lock | ✅ Implemented 2026-05-05 | UninstallLockManager.java, UninstallExpiryReceiver.java | DangerZone.js, useUninstallLock.js | `uninstall_lock_enabled`, `delete_request_at_wall`, `delete_request_expires_at` |
 | Settings Change Lock (opt-in per-scope edit lock) | ✅ Implemented 2026-06-22 (not built/run) — replaced Commitment Cooldown | lock/SettingsLockManager.java, bridge/SettingsModule.java | Customize/useSettingsLock.js, SettingsLockGate.js, SettingsLockSection.js, customize.js, AppDetail/AppDetail.js | `settings_lock_enabled`, `settings_lock_duration_ms`, `settings_lock_until` |
 | Screen time dashboard | ✅ Working | ScreenTimeTracker.java | home.js, useDigitalWellbeing.js | UsageStatsManager |

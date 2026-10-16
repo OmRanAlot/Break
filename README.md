@@ -74,6 +74,8 @@ Break is an actively developed project. The Android app and core flows are imple
 
 Usage monitoring and intervention are performed on device. Reflection data is stored in the app's private Room database; the feature has no synchronization path, and attempted URLs are not persisted. See [the reflection privacy notes](docs/REFLECTIONS.md) for details.
 
+**Optional typed-phrase deletion safeguard (Android only):** under Customize → Deletion Prevention you can turn on "Require phrase to delete" and choose a phrase. After the 60-second uninstall pause you must type it exactly (case-sensitive, outer spaces ignored) before the overlay lets the uninstall continue. The phrase is stored only in on-device preferences, is checked natively, and is never logged or sent off-device. It is off by default and does not change the existing pause when disabled.
+
 ## License
 
 This repository is private and proprietary.

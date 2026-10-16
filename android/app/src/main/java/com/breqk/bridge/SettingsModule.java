@@ -5,6 +5,7 @@ import com.Break.widget.BreakWidgetProvider;
 import com.Break.monitor.AppUsageMonitor;
 import com.Break.lock.ContentFilterGuard;
 import com.Break.lock.SettingsLockManager;
+import com.Break.uninstall.PhraseDisableGate;
 
 /*
  * SettingsModule
@@ -312,6 +313,88 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         boolean enabled = BreakPrefs.isUninstallLockEnabled(reactContext);
         Log.d(TAG, "[GET] uninstall_lock_enabled=" + enabled);
         callback.invoke(enabled);
+    }
+
+    /**
+     * Reads the typed-phrase deletion safeguard: [toggle, phrase]. Phrase is
+     * returned to JS only so the user can edit it in Customize; it is NEVER logged.
+     */
+    @ReactMethod
+    public void getUninstallPhraseConfig(com.facebook.react.bridge.Callback callback) {
+        Log.d(TAG, "[GET] getUninstallPhraseConfig called");
+        callback.invoke(
+                BreakPrefs.getUninstallPhraseToggle(reactContext),
+                BreakPrefs.getUninstallPhrase(reactContext));
+    }
+
+    /**
+     * Saves the configured phrase (trimmed). Rejects blank values. The phrase is
+     * never logged.
+     */
+    @ReactMethod
+    public void saveUninstallPhrase(String phrase, Promise promise) {
+        boolean saved = BreakPrefs.setUninstallPhrase(reactContext, phrase);
+        Log.d(TAG, "[SAVE] saveUninstallPhrase saved=" + saved);
+        if (saved) {
+            promise.resolve(true);
+        } else {
+            promise.reject("EMPTY_PHRASE", "Phrase must not be blank");
+        }
+    }
+
+    /**
+     * Turns the phrase requirement ON. Rejected when no non-blank phrase is
+     * stored. Turning it OFF is not possible here — see
+     * requestUninstallPhraseDisable / confirmUninstallPhraseDisable.
+     */
+    @ReactMethod
+    public void enableUninstallPhrase(Promise promise) {
+        boolean ok = BreakPrefs.enableUninstallPhrase(reactContext);
+        Log.d(TAG, "[SAVE] enableUninstallPhrase ok=" + ok);
+        if (ok) {
+            promise.resolve(true);
+        } else {
+            promise.reject("EMPTY_PHRASE", "Set a non-blank phrase before enabling");
+        }
+    }
+
+    /** Builds {state: none|waiting|ready, readyAt, expiresAt} for a request time. */
+    private WritableMap phraseDisableStatus(long requestAt) {
+        PhraseDisableGate.State s = PhraseDisableGate.stateOf(requestAt, System.currentTimeMillis());
+        WritableMap map = Arguments.createMap();
+        map.putString("state", s.name().toLowerCase());
+        map.putDouble("readyAt", requestAt == 0L ? 0 : PhraseDisableGate.readyAt(requestAt));
+        map.putDouble("expiresAt", requestAt == 0L ? 0 : PhraseDisableGate.expiresAt(requestAt));
+        return map;
+    }
+
+    /**
+     * First "turn off" attempt: starts the 1-hour wait (idempotent while a
+     * request is live) and returns its status. Does NOT turn anything off.
+     */
+    @ReactMethod
+    public void requestUninstallPhraseDisable(Promise promise) {
+        long at = BreakPrefs.requestUninstallPhraseDisable(reactContext);
+        Log.d(TAG, "[SAVE] requestUninstallPhraseDisable");
+        promise.resolve(phraseDisableStatus(at));
+    }
+
+    /** Current disable-request status (state "none" when no live request). */
+    @ReactMethod
+    public void getUninstallPhraseDisableStatus(Promise promise) {
+        promise.resolve(phraseDisableStatus(BreakPrefs.getUninstallPhraseDisableRequestAt(reactContext)));
+    }
+
+    /** Turns the requirement off — only succeeds inside the 15-minute READY window. */
+    @ReactMethod
+    public void confirmUninstallPhraseDisable(Promise promise) {
+        boolean ok = BreakPrefs.confirmUninstallPhraseDisable(reactContext);
+        Log.d(TAG, "[SAVE] confirmUninstallPhraseDisable ok=" + ok);
+        if (ok) {
+            promise.resolve(true);
+        } else {
+            promise.reject("NOT_READY", "Disable window is not open");
+        }
     }
 
     @ReactMethod

@@ -101,6 +101,41 @@ export const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
+  // Deletion phrase input (DeletionPhraseSection).
+  phraseBlock: {
+    marginTop: 10,
+  },
+  phraseInput: {
+    borderWidth: 1,
+    borderColor: L.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+    color: L.charcoal,
+  },
+  phraseInputError: {
+    borderColor: '#B91C1C',
+  },
+  phraseErrorText: {
+    fontSize: 12,
+    color: '#B91C1C',
+    marginTop: 6,
+  },
+  phraseSaveBtn: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    backgroundColor: L.charcoal,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  phraseSaveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
   // Toggle label + InfoCircle side by side (double-safe disable row).
   labelWithInfo: {
     flexDirection: 'row',

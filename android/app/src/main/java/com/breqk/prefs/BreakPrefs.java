@@ -7,6 +7,8 @@ import android.util.Log;
 
 import com.Break.service.BreakVpnService;
 import com.Break.monitor.ServiceHelper;
+import com.Break.uninstall.PhraseDisableGate;
+import com.Break.uninstall.UninstallPhrase;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -201,6 +203,15 @@ public final class BreakPrefs {
     public static final String KEY_UNINSTALL_LOCK_ENABLED = "uninstall_lock_enabled";
     public static final String KEY_UNINSTALL_LOCK_CONSENT_VERSION = "uninstall_lock_consent_version";
     public static final String KEY_UNINSTALL_LOCK_CONSENT_AT = "uninstall_lock_consent_at";
+
+    // Optional typed-phrase confirmation after the 60s uninstall pause.
+    // Default OFF. Phrase is local-only and must NEVER be logged.
+    // Like the keys above, never include these in a "reset to defaults" routine.
+    public static final String KEY_UNINSTALL_PHRASE_ENABLED = "uninstall_phrase_enabled";
+    public static final String KEY_UNINSTALL_PHRASE = "uninstall_phrase";
+    // Epoch ms of the first "turn off" attempt; drives the 1h wait + 15min window
+    // (see PhraseDisableGate). Never wipe in a reset-to-defaults routine.
+    public static final String KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT = "uninstall_phrase_disable_request_at";
 
     // Twin-clock state for tamper detection (see UninstallLockManager).
     // request_at_wall = System.currentTimeMillis() captured at requestDelete()
@@ -1102,6 +1113,104 @@ public final class BreakPrefs {
     /** Enables or disables the deletion-prevention lock screen. */
     public static void setUninstallLockEnabled(Context context, boolean enabled) {
         get(context).edit().putBoolean(KEY_UNINSTALL_LOCK_ENABLED, enabled).apply();
+    }
+
+    /**
+     * Whether the optional "type a phrase to delete" step is required after the
+     * uninstall pause. Default false (existing behavior unchanged). Never
+     * returns true when no usable phrase is stored, so an unsatisfiable
+     * requirement can't lock the user out.
+     */
+    public static boolean isUninstallPhraseRequired(Context context) {
+        SharedPreferences prefs = get(context);
+        return prefs.getBoolean(KEY_UNINSTALL_PHRASE_ENABLED, false)
+                && UninstallPhrase.isValid(prefs.getString(KEY_UNINSTALL_PHRASE, ""));
+    }
+
+    /** Raw toggle value (ignores phrase validity) — used by the settings UI. */
+    public static boolean getUninstallPhraseToggle(Context context) {
+        return get(context).getBoolean(KEY_UNINSTALL_PHRASE_ENABLED, false);
+    }
+
+    /**
+     * Returns the stored (trimmed) phrase, or "" if unset. Callers MUST NOT log it.
+     */
+    public static String getUninstallPhrase(Context context) {
+        return UninstallPhrase.normalize(get(context).getString(KEY_UNINSTALL_PHRASE, ""));
+    }
+
+    /**
+     * Stores the trimmed phrase. A blank phrase is rejected (returns false) and
+     * changes nothing. Returns true if persisted. The value is never logged.
+     */
+    public static boolean setUninstallPhrase(Context context, String phrase) {
+        String normalized = UninstallPhrase.normalize(phrase);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        get(context).edit().putString(KEY_UNINSTALL_PHRASE, normalized).apply();
+        return true;
+    }
+
+    /**
+     * Turns the phrase requirement ON. Rejected (false) when no usable phrase is
+     * stored. There is deliberately NO plain "turn off" setter: disabling only
+     * happens through {@link #confirmUninstallPhraseDisable(Context)} after the
+     * 1-hour wait ({@link PhraseDisableGate}).
+     */
+    public static boolean enableUninstallPhrase(Context context) {
+        if (!UninstallPhrase.isValid(get(context).getString(KEY_UNINSTALL_PHRASE, ""))) {
+            return false;
+        }
+        get(context).edit()
+                .putBoolean(KEY_UNINSTALL_PHRASE_ENABLED, true)
+                .remove(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT)
+                .apply();
+        return true;
+    }
+
+    /**
+     * Returns the live disable-request timestamp (epoch ms), or 0 if none. An
+     * expired request (1h wait + 15min window elapsed) is cleared, so the
+     * safeguard stays on and the next attempt restarts the wait.
+     */
+    public static long getUninstallPhraseDisableRequestAt(Context context) {
+        long at = get(context).getLong(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT, 0L);
+        if (at != 0L
+                && PhraseDisableGate.stateOf(at, System.currentTimeMillis()) == PhraseDisableGate.State.NONE) {
+            get(context).edit().remove(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT).apply();
+            return 0L;
+        }
+        return at;
+    }
+
+    /**
+     * Starts the disable wait if none is live (idempotent while one is live) and
+     * returns the request timestamp.
+     */
+    public static long requestUninstallPhraseDisable(Context context) {
+        long at = getUninstallPhraseDisableRequestAt(context);
+        if (at == 0L) {
+            at = System.currentTimeMillis();
+            get(context).edit().putLong(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT, at).apply();
+        }
+        return at;
+    }
+
+    /**
+     * Actually turns the requirement off. Succeeds ONLY while the request is in
+     * its READY window; otherwise returns false and changes nothing.
+     */
+    public static boolean confirmUninstallPhraseDisable(Context context) {
+        long at = getUninstallPhraseDisableRequestAt(context);
+        if (PhraseDisableGate.stateOf(at, System.currentTimeMillis()) != PhraseDisableGate.State.READY) {
+            return false;
+        }
+        get(context).edit()
+                .putBoolean(KEY_UNINSTALL_PHRASE_ENABLED, false)
+                .remove(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT)
+                .apply();
+        return true;
     }
 
     // ── Mindful Viewing Coach helpers ─────────────────────────────────────────

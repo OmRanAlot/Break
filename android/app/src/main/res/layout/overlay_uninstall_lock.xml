@@ -31,6 +31,12 @@
     android:layout_height="match_parent"
     android:background="#FAFAFA">
 
+    <!-- ScrollView keeps the phrase field + buttons reachable above the keyboard. -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -38,7 +44,9 @@
         android:orientation="vertical"
         android:gravity="center"
         android:paddingStart="36dp"
-        android:paddingEnd="36dp">
+        android:paddingEnd="36dp"
+        android:paddingTop="24dp"
+        android:paddingBottom="24dp">
 
         <!-- Static headline — frames the moment without a countdown -->
         <TextView
@@ -117,6 +125,52 @@
             android:visibility="gone"
             android:layout_marginTop="14dp" />
 
+        <!--
+            Optional typed-phrase step (only revealed after the wait AND only when
+            the user enabled "Require phrase to delete"). Both views start GONE.
+            Validation is enforced natively in UninstallLockOverlay when the delete
+            button is tapped — this field's visibility is not the security gate.
+            The text is flagged no-personalized-learning/password-ish so keyboards
+            don't store or echo it.
+        -->
+        <TextView
+            android:id="@+id/uninstall_lock_phrase_prompt"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Type your phrase to continue"
+            android:textSize="14sp"
+            android:textColor="#525252"
+            android:gravity="center"
+            android:visibility="gone"
+            android:layout_marginTop="24dp" />
+
+        <EditText
+            android:id="@+id/uninstall_lock_phrase_input"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:inputType="text|textNoSuggestions"
+            android:imeOptions="flagNoPersonalizedLearning|actionDone"
+            android:importantForAutofill="no"
+            android:singleLine="true"
+            android:textSize="16sp"
+            android:textColor="#1A1A1A"
+            android:contentDescription="Deletion phrase"
+            android:visibility="gone"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:id="@+id/uninstall_lock_phrase_error"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="That phrase does not match. Try again."
+            android:textSize="13sp"
+            android:textColor="#B91C1C"
+            android:gravity="center"
+            android:visibility="gone"
+            android:layout_marginTop="6dp" />
+
     </LinearLayout>
+
+    </ScrollView>
 
 </FrameLayout>
