@@ -1159,6 +1159,11 @@ public class AppUsageMonitor {
                 Log.w(TAG, "removeOverlay: view already removed from WindowManager", e);
             }
             overlayView = null;
+        // Remove the actual window root (a landscape wrapper, or overlayView itself
+        // in portrait) — removing the rotated child would fail, it is not a root.
+        View rootToRemove = overlayWindowRoot != null ? overlayWindowRoot : overlayView;
+        if (rootToRemove != null) {
+            windowManager.removeView(rootToRemove);
         }
         isOverlayActive = false;
         overlayShownAt = 0L;
