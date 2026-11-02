@@ -1,4 +1,5 @@
 package com.Break.monitor;
+
 import com.Break.mode.ModeManager;
 import com.Break.prefs.BreakPrefs;
 import com.Break.shortform.budget.ScrollBudgetLogic;
@@ -86,40 +87,49 @@ public class AppUsageMonitor {
     private final Map<String, Long> popupCooldown = new ConcurrentHashMap<>();
     private static final long POPUP_COOLDOWN_MS = 1000; // 1s cooldown to avoid rapid re-triggers after Continue
     private static final long OVERLAY_DEBOUNCE_MS = 500; // 0.5s guard to prevent double overlay creation
-    // After the overlay appears, button taps are ignored for this long so accidental
+    // After the overlay appears, button taps are ignored for this long so
+    // accidental
     // touch-throughs during the recents swipe gesture cannot dismiss it.
     private static final long OVERLAY_TOUCH_GUARD_MS = 1000;
     private long overlayPendingUntil = 0L;
     private final Object overlayLock = new Object();
-    // Recents overview / brief launcher flashes change the foreground away from the blocked
-    // app even though the user is about to return. Hold the overlay until they've been gone
+    // Recents overview / brief launcher flashes change the foreground away from the
+    // blocked
+    // app even though the user is about to return. Hold the overlay until they've
+    // been gone
     // longer than this threshold before actually dismissing.
     // Away ≤ this → keep session (no re-arm). Away longer → end session so return
     // shows the delay overlay again. Raised from 1.5s so brief focus blips do not
     // relaunch the intercept.
     private static final long TRANSIENT_AWAY_GRACE_MS = 3000;
-    // Timestamp (ms) when foreground first changed away from lastAppPackage while overlay
+    // Timestamp (ms) when foreground first changed away from lastAppPackage while
+    // overlay
     // was active. 0 = currently on the blocked app (or overlay not shown).
     private long awayFromBlockedAppSince = 0L;
-    // Wall-clock when we first observed a departure from currentForegroundApp while that
+    // Wall-clock when we first observed a departure from currentForegroundApp while
+    // that
     // package still had intercept session state. 0 = not pending a session end.
     private long sessionAwaySince = 0L;
 
     // Custom message for the delay overlay (set from React Native)
     private String customMessage = "Take a moment to consider if you really need this app right now";
     private int customDelayTimeSeconds = 15; // Default delay time for countdown
-    // Popup delay: how long to wait after FIRST popup before showing popup again (in minutes)
+    // Popup delay: how long to wait after FIRST popup before showing popup again
+    // (in minutes)
     private int popupDelayMinutes = 10; // Default: 10 minutes
-    // Track when each blocked app was opened (packageName -> timestamp in milliseconds)
+    // Track when each blocked app was opened (packageName -> timestamp in
+    // milliseconds)
     private final ConcurrentHashMap<String, Long> appOpenTimestamps = new ConcurrentHashMap<>();
-    // Track when the LAST popup was shown for each app (packageName -> timestamp in milliseconds)
+    // Track when the LAST popup was shown for each app (packageName -> timestamp in
+    // milliseconds)
     // This is used to show the next popup after X minutes
     private final ConcurrentHashMap<String, Long> lastPopupShownTimestamps = new ConcurrentHashMap<>();
     // Store the monitor runnable so we can remove it to prevent concurrent loops
     private Runnable monitorRunnable;
     // Store the countdown runnable so we can cancel it when overlay is removed
     private Runnable countdownRunnable;
-    // ObjectAnimator for the breathing circle on the delay overlay — cancelled in removeOverlay()
+    // ObjectAnimator for the breathing circle on the delay overlay — cancelled in
+    // removeOverlay()
     private ObjectAnimator breathingAnimator = null;
 
     // ─── Overlay Safety & Auto-Dismiss ─────────────────────────────────────
@@ -127,7 +137,8 @@ public class AppUsageMonitor {
     private long overlayShownAt = 0L;
     // Cached launcher package name — resolved once via PackageManager
     private String cachedLauncherPackage = null;
-    // Known system packages that should never trigger the overlay (dialer, system UI, etc.)
+    // Known system packages that should never trigger the overlay (dialer, system
+    // UI, etc.)
     private static final Set<String> SYSTEM_PACKAGES = new HashSet<>(Arrays.asList(
             "com.android.dialer",
             "com.samsung.android.dialer",
@@ -136,9 +147,9 @@ public class AppUsageMonitor {
             "com.android.systemui",
             "com.android.phone",
             "com.samsung.android.incallui",
-            "com.android.server.telecom"
-    ));
-    // Track which blocked app has an active overlay — keeps it visible through recents
+            "com.android.server.telecom"));
+    // Track which blocked app has an active overlay — keeps it visible through
+    // recents
     private String blockedAppWithActiveOverlay = "";
 
     // ─── SharedPreferences Throttling ───────────────────────────────────────
@@ -150,7 +161,8 @@ public class AppUsageMonitor {
     private static final long PREFS_SYNC_INTERVAL_MS = 500;
     private long lastPrefsSyncTime = 0;
     // Cached SharedPreferences instance — Android internally caches these, but
-    // storing the reference avoids the hash lookup in getSharedPreferences() each tick.
+    // storing the reference avoids the hash lookup in getSharedPreferences() each
+    // tick.
     private SharedPreferences cachedPrefs;
     // Cached Reels state — refreshed every PREFS_SYNC_INTERVAL_MS
     private boolean cachedInReels = false;
@@ -185,27 +197,34 @@ public class AppUsageMonitor {
     private long nullForegroundSince = 0L;
 
     // ─── Scroll Budget ─────────────────────────────────────────────────────────
-    // Configuration (loaded from SharedPreferences via loadScrollBudgetFromPrefs, updated by setScrollBudget)
-    private int scrollAllowanceMinutes = 5;    // minutes allowed per window
-    private int scrollWindowMinutes = 60;      // window duration in minutes
+    // Configuration (loaded from SharedPreferences via loadScrollBudgetFromPrefs,
+    // updated by setScrollBudget)
+    private int scrollAllowanceMinutes = 5; // minutes allowed per window
+    private int scrollWindowMinutes = 60; // window duration in minutes
     private boolean scrollBudgetEnabled = true; // master on/off toggle
 
-    // In-memory tracking — READ-ONLY mirrors of values written by ReelsInterventionService.
+    // In-memory tracking — READ-ONLY mirrors of values written by
+    // ReelsInterventionService.
     // Synced from SharedPreferences each sync tick so JS bridge APIs stay accurate.
-    // Do NOT write these back to SharedPreferences — ReelsInterventionService is the sole writer.
+    // Do NOT write these back to SharedPreferences — ReelsInterventionService is
+    // the sole writer.
     private long scrollTimeUsedMs = 0;
     private long windowStartTime = 0;
     private long budgetExhaustedAt = 0;
 
     // ─── Reels State Detection ────────────────────────────────────────────────
-    // ReelsInterventionService writes is_in_reels / is_in_reels_timestamp / is_in_reels_package
-    // to SharedPreferences. We read those here to gate scroll budget accumulation to only
-    // the time the user is actually viewing Reels/Shorts (not the entire Instagram app).
+    // ReelsInterventionService writes is_in_reels / is_in_reels_timestamp /
+    // is_in_reels_package
+    // to SharedPreferences. We read those here to gate scroll budget accumulation
+    // to only
+    // the time the user is actually viewing Reels/Shorts (not the entire Instagram
+    // app).
 
     /**
      * Maximum age (in ms) of the Reels state timestamp before we treat it as stale.
      * ReelsInterventionService refreshes the timestamp via heartbeat every 2s, so
-     * 5s gives ~2 missed heartbeats of tolerance before we assume the service crashed
+     * 5s gives ~2 missed heartbeats of tolerance before we assume the service
+     * crashed
      * or the user left Reels without a clean exit event.
      */
     private static final long REELS_STATE_STALENESS_MS = 5000;
@@ -298,7 +317,8 @@ public class AppUsageMonitor {
     // main monitoring loop that checks the foreground app every second and shows
     // the overlay if needed
     private void monitorApps() {
-        // Use the class-level handler to avoid redundant instances and reduce GC pressure.
+        // Use the class-level handler to avoid redundant instances and reduce GC
+        // pressure.
 
         monitorRunnable = new Runnable() {
             @Override
@@ -425,7 +445,8 @@ public class AppUsageMonitor {
                         String appName = getAppName(foregroundApp);
                         // Read per-app policy directly so the decision is always live, regardless
                         // of whether the in-memory blockedApps cache has been updated yet.
-                        boolean isBlocked = BreakPrefs.isFeatureEnabled(context, foregroundApp, BreakPrefs.FEATURE_APP_OPEN_INTERCEPT);
+                        boolean isBlocked = BreakPrefs.isFeatureEnabled(context, foregroundApp,
+                                BreakPrefs.FEATURE_APP_OPEN_INTERCEPT);
                         Log.i(TAG, "[INTERCEPT_DECISION] pkg=" + foregroundApp
                                 + " app_open_intercept=" + isBlocked
                                 + " allowedSession=" + allowedThisSession.contains(foregroundApp));
@@ -492,7 +513,8 @@ public class AppUsageMonitor {
                             Long lastPopupTime = lastPopupShownTimestamps.get(foregroundApp);
                             // Per-app popup delay (falls back to global if not set for this app).
                             // Normalized so a malformed stored value can't yield a ~0ms interval
-                            // (which would re-show the intercept every tick). ONCE_SENTINEL = once per open.
+                            // (which would re-show the intercept every tick). ONCE_SENTINEL = once per
+                            // open.
                             int effectiveDelayMin = PopupDecision.normalizeDelayMinutes(
                                     getPerAppPopupDelayMinutes(foregroundApp));
                             long popupDelayMs = PopupDecision.delayMillis(effectiveDelayMin);
@@ -500,7 +522,7 @@ public class AppUsageMonitor {
                             // Determine if we should show popup (pure logic in PopupDecision):
                             // 1. First popup: no previous popup this session AND app not already allowed.
                             // 2. Next popup: previous popup shown AND the X-minute interval has elapsed
-                            //    (never for the once-per-open sentinel).
+                            // (never for the once-per-open sentinel).
                             boolean shouldShowFirstPopup = PopupDecision.shouldShowFirst(
                                     appOpenTime, lastPopupTime, isAllowed);
                             boolean shouldShowNextPopup = PopupDecision.shouldShowNext(
@@ -639,7 +661,8 @@ public class AppUsageMonitor {
     }
 
     /**
-     * Removes entries from a ConcurrentHashMap where the Long value (timestamp) is before cutoff.
+     * Removes entries from a ConcurrentHashMap where the Long value (timestamp) is
+     * before cutoff.
      * Returns the number of entries removed.
      */
     private int pruneMap(Map<String, Long> map, long cutoff) {
@@ -681,15 +704,19 @@ public class AppUsageMonitor {
     /**
      * Returns true if the given package is a system app, launcher, or phone/dialer
      * that should never trigger the blocked-app overlay.
-     * Checks both the hardcoded SYSTEM_PACKAGES set and the dynamically resolved launcher.
+     * Checks both the hardcoded SYSTEM_PACKAGES set and the dynamically resolved
+     * launcher.
      */
     private boolean isSystemOrLauncher(String packageName) {
-        if (packageName == null) return false;
+        if (packageName == null)
+            return false;
         // Check hardcoded system packages
-        if (SYSTEM_PACKAGES.contains(packageName)) return true;
+        if (SYSTEM_PACKAGES.contains(packageName))
+            return true;
         // Check dynamically resolved home launcher
         String launcher = getLauncherPackage();
-        if (launcher != null && packageName.equals(launcher)) return true;
+        if (launcher != null && packageName.equals(launcher))
+            return true;
         return false;
     }
 
@@ -711,15 +738,18 @@ public class AppUsageMonitor {
      * so the show-decision and the session-rearm agree on coach ownership.
      */
     private boolean isOwnInterceptionOwning(String packageName) {
-        if (isOverlayActive) return true;
+        if (isOverlayActive)
+            return true;
         if ("com.google.android.youtube".equals(packageName)
                 && BreakPrefs.isCoachEnabled(context)) {
             boolean coachVisible = BreakPrefs.get(context)
                     .getBoolean(BreakPrefs.KEY_COACH_OVERLAY_VISIBLE, false);
-            if (coachVisible) return true;
+            if (coachVisible)
+                return true;
             Long ytOpenTime = appOpenTimestamps.get(packageName);
             long sinceYtOpen = ytOpenTime != null
-                    ? (System.currentTimeMillis() - ytOpenTime) : Long.MAX_VALUE;
+                    ? (System.currentTimeMillis() - ytOpenTime)
+                    : Long.MAX_VALUE;
             return sinceYtOpen < BreakPrefs.COACH_FALLBACK_GRACE_MS;
         }
         return false;
@@ -745,7 +775,8 @@ public class AppUsageMonitor {
                         // App moved to foreground — record it as the current candidate
                         lastForeground = event.getPackageName();
                         lastTs = ts;
-                    } else if (type == UsageEvents.Event.MOVE_TO_BACKGROUND || type == UsageEvents.Event.ACTIVITY_PAUSED) {
+                    } else if (type == UsageEvents.Event.MOVE_TO_BACKGROUND
+                            || type == UsageEvents.Event.ACTIVITY_PAUSED) {
                         // App moved to background — if it's our current foreground candidate,
                         // invalidate it. This prevents stale foreground detection when the user
                         // goes to the home screen, receives a phone call, etc.
@@ -845,14 +876,17 @@ public class AppUsageMonitor {
                  */
                 LayoutInflater inflater = LayoutInflater.from(context);
                 // Set overlayView here (inside handler) instead of as a sentinel outside.
-                // This prevents the sentinel leak if an exception occurs before the handler runs.
+                // This prevents the sentinel leak if an exception occurs before the handler
+                // runs.
                 overlayView = inflater.inflate(R.layout.delay_overlay, null);
 
                 /*
                  * FIND VIEW COMPONENTS
                  * --------------------
-                 * New design (overlay image.png): countdownRing, title, subtitle, backButton, continueButton.
-                 * The center ring fills over the wait time; the pause glyph and label are static.
+                 * New design (overlay image.png): countdownRing, title, subtitle, backButton,
+                 * continueButton.
+                 * The center ring fills over the wait time; the pause glyph and label are
+                 * static.
                  */
                 ProgressBar countdownRing = overlayView.findViewById(R.id.countdownRing);
                 TextView titleText = overlayView.findViewById(R.id.title);
@@ -937,7 +971,7 @@ public class AppUsageMonitor {
                 /*
                  * START COUNTDOWN RING & BUTTON COUNTDOWN
                  * ---------------------------------------
-                 * Ring:     ObjectAnimator fills the center ring 0→full over the wait seconds.
+                 * Ring: ObjectAnimator fills the center ring 0→full over the wait seconds.
                  * Countdown: enables the Continue button after effectiveDelaySecs ticks.
                  * Both finish together so the visual loader matches the enforced wait time.
                  */
@@ -1009,7 +1043,8 @@ public class AppUsageMonitor {
      * dimmed backdrop still covers the whole screen.
      *
      * @return the view to hand to WindowManager.addView — either {@code content}
-     *         itself (portrait) or a wrapper holding the rotated content (landscape).
+     *         itself (portrait) or a wrapper holding the rotated content
+     *         (landscape).
      */
     private View lockOverlayToPortrait(View content) {
         Display display = windowManager.getDefaultDisplay();
@@ -1036,8 +1071,7 @@ public class AppUsageMonitor {
         // Size the content to PORTRAIT dimensions (swap w/h). Once rotated ±90°
         // around its center, its bounding box becomes screenW × screenH and fills
         // the full landscape window.
-        FrameLayout.LayoutParams lp =
-                new FrameLayout.LayoutParams(screenH, screenW);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(screenH, screenW);
         lp.gravity = Gravity.CENTER;
         content.setLayoutParams(lp);
         content.setRotation(degrees);
@@ -1049,16 +1083,22 @@ public class AppUsageMonitor {
     /*
      * COUNTDOWN RING ANIMATION
      * ------------------------
-     * Animates the center ProgressBar (@id/countdownRing) so its white ring fills up
-     * from empty to full over the exact wait duration. This matches the time the user
-     * MUST wait before the Continue button enables — the ring and the button countdown
+     * Animates the center ProgressBar (@id/countdownRing) so its white ring fills
+     * up
+     * from empty to full over the exact wait duration. This matches the time the
+     * user
+     * MUST wait before the Continue button enables — the ring and the button
+     * countdown
      * finish together.
      *
-     * Animation: progress 0 → max (10000) over (seconds × 1000)ms, LINEAR, no repeat.
-     * The progress drawable (circular_countdown.xml) renders the level as a clockwise
+     * Animation: progress 0 → max (10000) over (seconds × 1000)ms, LINEAR, no
+     * repeat.
+     * The progress drawable (circular_countdown.xml) renders the level as a
+     * clockwise
      * sweep starting at 12 o'clock.
      *
-     * The animator is stored in breathingAnimator (reused slot) so it is cancelled in
+     * The animator is stored in breathingAnimator (reused slot) so it is cancelled
+     * in
      * removeOverlay() before the view is detached from WindowManager.
      */
     private void startCountdownRing(ProgressBar ring, int seconds) {
@@ -1091,12 +1131,14 @@ public class AppUsageMonitor {
      * CONTINUE BUTTON COUNTDOWN
      * --------------------------
      * Counts down from `seconds` and updates the Continue button text each tick:
-     *   "Wait (3s)" → "Wait (2s)" → "Wait (1s)" → "Continue" [enabled]
+     * "Wait (3s)" → "Wait (2s)" → "Wait (1s)" → "Continue" [enabled]
      *
-     * When the countdown completes, the button is enabled and its text/color updated to
+     * When the countdown completes, the button is enabled and its text/color
+     * updated to
      * signal it is now tappable. Uses the class-level handler (main looper).
      *
-     * The Runnable is stored in countdownRunnable so it can be cancelled in removeOverlay().
+     * The Runnable is stored in countdownRunnable so it can be cancelled in
+     * removeOverlay().
      */
     private void startContinueCountdown(Button continueButton, int seconds) {
         Log.d(TAG, "startContinueCountdown: starting " + seconds + "s countdown for " + lastAppPackage);
@@ -1138,13 +1180,15 @@ public class AppUsageMonitor {
     }
 
     private void removeOverlay() {
-        // Cancel countdown to prevent orphaned handler callbacks referencing detached views
+        // Cancel countdown to prevent orphaned handler callbacks referencing detached
+        // views
         if (countdownRunnable != null) {
             handler.removeCallbacks(countdownRunnable);
             countdownRunnable = null;
             Log.d(TAG, "removeOverlay: countdown runnable cancelled");
         }
-        // Cancel breathing animation before removing view to avoid animating a detached view
+        // Cancel breathing animation before removing view to avoid animating a detached
+        // view
         if (breathingAnimator != null) {
             breathingAnimator.cancel();
             breathingAnimator = null;
@@ -1159,20 +1203,21 @@ public class AppUsageMonitor {
                 Log.w(TAG, "removeOverlay: view already removed from WindowManager", e);
             }
             overlayView = null;
-        // Remove the actual window root (a landscape wrapper, or overlayView itself
-        // in portrait) — removing the rotated child would fail, it is not a root.
-        View rootToRemove = overlayWindowRoot != null ? overlayWindowRoot : overlayView;
-        if (rootToRemove != null) {
-            windowManager.removeView(rootToRemove);
+            // Remove the actual window root (a landscape wrapper, or overlayView itself
+            // in portrait) — removing the rotated child would fail, it is not a root.
+            View rootToRemove = overlayWindowRoot != null ? overlayWindowRoot : overlayView;
+            if (rootToRemove != null) {
+                windowManager.removeView(rootToRemove);
+            }
+            isOverlayActive = false;
+            overlayShownAt = 0L;
+            awayFromBlockedAppSince = 0L;
+            // NOTE: We DON'T clear appOpenTimestamps or lastPopupShownTimestamps here —
+            // that is the responsibility of the caller (see removeOverlayAutoDismissed).
+            lastAppPackage = "";
+            blockedAppWithActiveOverlay = "";
+            overlayPendingUntil = 0L;
         }
-        isOverlayActive = false;
-        overlayShownAt = 0L;
-        awayFromBlockedAppSince = 0L;
-        // NOTE: We DON'T clear appOpenTimestamps or lastPopupShownTimestamps here —
-        // that is the responsibility of the caller (see removeOverlayAutoDismissed).
-        lastAppPackage = "";
-        blockedAppWithActiveOverlay = "";
-        overlayPendingUntil = 0L;
     }
 
     /**
@@ -1324,7 +1369,8 @@ public class AppUsageMonitor {
         Log.d(TAG, "Popup delay set: " + minutes + " minutes (first popup shows immediately, second popup after "
                 + minutes + " min)");
 
-        // Note: We don't clear timestamps when delay changes - let them continue tracking
+        // Note: We don't clear timestamps when delay changes - let them continue
+        // tracking
     }
 
     // ─── Usage Stats Query Methods ──────────────────────────────────────────
@@ -1364,7 +1410,8 @@ public class AppUsageMonitor {
 
     /**
      * Returns the effective popup delay (minutes) for a specific app.
-     * Checks per-app intercept_settings first; falls back to the global popupDelayMinutes.
+     * Checks per-app intercept_settings first; falls back to the global
+     * popupDelayMinutes.
      * Integer.MAX_VALUE means "show once per open".
      */
     private int getPerAppPopupDelayMinutes(String packageName) {
@@ -1393,7 +1440,8 @@ public class AppUsageMonitor {
 
     /**
      * Load intercept overlay settings from SharedPreferences.
-     * Called on startMonitoring() so user-customized values survive service restarts.
+     * Called on startMonitoring() so user-customized values survive service
+     * restarts.
      */
     private void loadInterceptSettingsFromPrefs() {
         String msg = cachedPrefs.getString(BreakPrefs.KEY_DELAY_MESSAGE, null);
@@ -1419,8 +1467,10 @@ public class AppUsageMonitor {
      * Called on startMonitoring() so settings survive app restarts.
      */
     private void loadScrollBudgetFromPrefs() {
-        scrollAllowanceMinutes = cachedPrefs.getInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, BreakPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
-        scrollWindowMinutes = cachedPrefs.getInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES, BreakPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
+        scrollAllowanceMinutes = cachedPrefs.getInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES,
+                BreakPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
+        scrollWindowMinutes = cachedPrefs.getInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES,
+                BreakPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
         // Restore in-progress window state (survives short service interruptions)
         scrollTimeUsedMs = cachedPrefs.getLong(BreakPrefs.KEY_SCROLL_TIME_USED_MS, 0);
         windowStartTime = cachedPrefs.getLong(BreakPrefs.KEY_SCROLL_WINDOW_START_TIME, 0);
@@ -1431,8 +1481,10 @@ public class AppUsageMonitor {
     }
 
     /**
-     * Syncs in-memory budget state from SharedPreferences (written by ReelsInterventionService).
-     * Called every PREFS_SYNC_INTERVAL_MS (5s) to keep JS bridge APIs accurate without
+     * Syncs in-memory budget state from SharedPreferences (written by
+     * ReelsInterventionService).
+     * Called every PREFS_SYNC_INTERVAL_MS (5s) to keep JS bridge APIs accurate
+     * without
      * reading prefs on every 1s tick.
      */
     private void syncScrollBudgetFromPrefs() {
@@ -1445,11 +1497,13 @@ public class AppUsageMonitor {
 
     /**
      * Update scroll budget configuration (in-memory only).
-     * VPNModule.setScrollBudget() already persists to SharedPreferences before sending
+     * VPNModule.setScrollBudget() already persists to SharedPreferences before
+     * sending
      * the intent to MyVpnService, so this method does NOT write to prefs to avoid
      * double writes.
      *
-     * @param allowanceMin Minutes of scroll allowed per window (>=0; 0 = always block immediately)
+     * @param allowanceMin Minutes of scroll allowed per window (>=0; 0 = always
+     *                     block immediately)
      * @param windowMin    Window duration in minutes (>=15)
      */
     public void setScrollBudget(int allowanceMin, int windowMin) {
@@ -1465,7 +1519,8 @@ public class AppUsageMonitor {
      * Returns a WritableMap with current scroll budget status.
      * Called by VPNModule.getScrollBudgetStatus() for the JS bridge.
      *
-     * Fields: allowanceMinutes, windowMinutes, usedMs, canScroll, nextScrollAtMs, remainingMs
+     * Fields: allowanceMinutes, windowMinutes, usedMs, canScroll, nextScrollAtMs,
+     * remainingMs
      */
     public com.facebook.react.bridge.WritableMap getScrollBudgetStatus() {
         ScrollBudgetLogic.Status s = ScrollBudgetLogic.derive(
@@ -1483,7 +1538,9 @@ public class AppUsageMonitor {
         return status;
     }
 
-    /** Returns true if the scroll budget has been exhausted for the current window. */
+    /**
+     * Returns true if the scroll budget has been exhausted for the current window.
+     */
     public boolean isScrollBudgetExhausted() {
         ScrollBudgetLogic.Status s = ScrollBudgetLogic.derive(
                 scrollAllowanceMinutes, scrollWindowMinutes,
@@ -1493,17 +1550,18 @@ public class AppUsageMonitor {
     }
 
     /**
-     * Checks whether the user is currently viewing Reels/Shorts in the given foreground app.
+     * Checks whether the user is currently viewing Reels/Shorts in the given
+     * foreground app.
      *
      * Reads state written by ReelsInterventionService via SharedPreferences:
-     *   - is_in_reels (boolean): flag set by the accessibility service
-     *   - is_in_reels_timestamp (long): when the flag was last updated
-     *   - is_in_reels_package (String): which app is in Reels
+     * - is_in_reels (boolean): flag set by the accessibility service
+     * - is_in_reels_timestamp (long): when the flag was last updated
+     * - is_in_reels_package (String): which app is in Reels
      *
      * Returns false (not in Reels) when:
-     *   - The flag is false
-     *   - The timestamp is stale (older than REELS_STATE_STALENESS_MS = 5s)
-     *   - The package doesn't match the current foreground app
+     * - The flag is false
+     * - The timestamp is stale (older than REELS_STATE_STALENESS_MS = 5s)
+     * - The package doesn't match the current foreground app
      *
      * This gates scroll budget accumulation so that only time spent in Reels/Shorts
      * counts against the budget, not general Instagram/YouTube browsing.
@@ -1522,17 +1580,20 @@ public class AppUsageMonitor {
             return false;
         }
 
-        // Staleness check: if ReelsInterventionService hasn't updated in 5s, assume it crashed
+        // Staleness check: if ReelsInterventionService hasn't updated in 5s, assume it
+        // crashed
         // or the user left Reels without a clean exit event
         long age = System.currentTimeMillis() - timestamp;
         if (age > REELS_STATE_STALENESS_MS) {
-            Log.d(TAG, "[REELS_STATE] isCurrentlyInReels: stale (age=" + age + "ms > " + REELS_STATE_STALENESS_MS + "ms) → not in Reels");
+            Log.d(TAG, "[REELS_STATE] isCurrentlyInReels: stale (age=" + age + "ms > " + REELS_STATE_STALENESS_MS
+                    + "ms) → not in Reels");
             return false;
         }
 
         // Package mismatch: Reels state is for a different app than the foreground app
         if (!reelsPackage.equals(foregroundApp)) {
-            Log.d(TAG, "[REELS_STATE] isCurrentlyInReels: package mismatch (reels=" + reelsPackage + " fg=" + foregroundApp + ") → not in Reels");
+            Log.d(TAG, "[REELS_STATE] isCurrentlyInReels: package mismatch (reels=" + reelsPackage + " fg="
+                    + foregroundApp + ") → not in Reels");
             return false;
         }
 
@@ -1540,9 +1601,13 @@ public class AppUsageMonitor {
         return true;
     }
 
-    /** Returns ms until the next scroll window opens. 0 if not exhausted or window start unknown. */
+    /**
+     * Returns ms until the next scroll window opens. 0 if not exhausted or window
+     * start unknown.
+     */
     public long getTimeUntilNextScroll() {
-        if (windowStartTime == 0 || budgetExhaustedAt == 0) return 0;
+        if (windowStartTime == 0 || budgetExhaustedAt == 0)
+            return 0;
         long windowMs = scrollWindowMinutes * 60 * 1000L;
         return Math.max(0, (windowStartTime + windowMs) - System.currentTimeMillis());
     }
