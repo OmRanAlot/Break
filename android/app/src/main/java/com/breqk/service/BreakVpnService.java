@@ -101,6 +101,11 @@ public class BreakVpnService extends Service {
 
         switch (action) {
                 case "START_MONITORING":
+                    if (!BreakPrefs.get(this).getBoolean(BreakPrefs.KEY_MONITORING_ENABLED, true)) {
+                        stopMonitoring();
+                        stopSelf();
+                        return START_NOT_STICKY;
+                    }
                     Notification notification = createNotification("Break Active");
                     startForeground(NOTIFICATION_ID, notification);
                     startMonitoring();
@@ -113,7 +118,14 @@ public class BreakVpnService extends Service {
                 case "UPDATE_BLOCKED_APPS":
                     Set<String> blocked = new HashSet<>(intent.getStringArrayListExtra("blockedApps"));
                     Log.d(TAG, "[CMD] UPDATE_BLOCKED_APPS size=" + blocked.size() + " apps=" + blocked.toString());
-                    if (monitor != null) monitor.setBlockedApps(blocked);
+                    if (monitor != null) {
+                        monitor.setBlockedApps(blocked);
+                        // ModeManager dispatches this on every mode transition. The monitor
+                        // caches delay/popup/budget values that resolve through the active
+                        // mode's setting_overrides, so they must be re-read here — otherwise
+                        // the previous mode's delay stays in force until a service restart.
+                        monitor.reloadSettings();
+                    }
                     saveBlockedApps(blocked);
                     break;
                 case "SET_DELAY_MESSAGE":
@@ -181,6 +193,8 @@ public class BreakVpnService extends Service {
                 monitor.setBlockedApps(savedBlockedApps);
             }
         }
+        monitor.setBlockedApps(BreakPrefs.getBlockedApps(this));
+        monitor.reloadSettings();
         loadScrollBudgetIntoMonitor(monitor);
         monitor.startMonitoring();
         Log.d(TAG, "Monitoring started with " + (monitor.getBlockedApps() != null ? monitor.getBlockedApps().size() : 0) + " blocked apps");

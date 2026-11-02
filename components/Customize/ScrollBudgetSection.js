@@ -13,23 +13,33 @@ import { View, Text, TouchableOpacity } from 'react-native';
 import { styles } from './customize.styles';
 import { formatBudgetTime } from '../common/format';
 
+/**
+ * @param {boolean} [disabled=false]  Optional read-only flag for the steppers.
+ *   Scroll budget is a GLOBAL setting (shared across modes), so Customize never
+ *   passes this true today — the controls are always editable. Kept as a generic
+ *   presentational prop in case a future gate needs to grey the steppers out
+ *   while leaving the live status row visible.
+ */
 const ScrollBudgetSection = ({
   scrollAllowance,
   scrollWindow,
   budgetStatus,
   adjustAllowance,
   adjustWindow,
+  disabled = false,
 }) => (
   <View style={styles.section}>
     <Text style={styles.sectionLabel}>Scroll Budget</Text>
 
-    <View style={styles.budgetControls}>
+    <View style={[styles.budgetControls, disabled && styles.sectionDisabled]}>
       <View style={styles.stepperGroup}>
         <TouchableOpacity
           style={styles.stepperBtn}
           onPress={() => adjustAllowance(-1)}
+          disabled={disabled}
           accessibilityRole="button"
           accessibilityLabel="Decrease allowance"
+          accessibilityState={{ disabled }}
         >
           <Text style={styles.stepperBtnText}>−</Text>
         </TouchableOpacity>
@@ -37,8 +47,10 @@ const ScrollBudgetSection = ({
         <TouchableOpacity
           style={styles.stepperBtn}
           onPress={() => adjustAllowance(1)}
+          disabled={disabled}
           accessibilityRole="button"
           accessibilityLabel="Increase allowance"
+          accessibilityState={{ disabled }}
         >
           <Text style={styles.stepperBtnText}>+</Text>
         </TouchableOpacity>
@@ -50,8 +62,10 @@ const ScrollBudgetSection = ({
         <TouchableOpacity
           style={styles.stepperBtn}
           onPress={() => adjustWindow(-15)}
+          disabled={disabled}
           accessibilityRole="button"
           accessibilityLabel="Decrease window"
+          accessibilityState={{ disabled }}
         >
           <Text style={styles.stepperBtnText}>−</Text>
         </TouchableOpacity>
@@ -59,8 +73,10 @@ const ScrollBudgetSection = ({
         <TouchableOpacity
           style={styles.stepperBtn}
           onPress={() => adjustWindow(15)}
+          disabled={disabled}
           accessibilityRole="button"
           accessibilityLabel="Increase window"
+          accessibilityState={{ disabled }}
         >
           <Text style={styles.stepperBtnText}>+</Text>
         </TouchableOpacity>

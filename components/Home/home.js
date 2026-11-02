@@ -26,6 +26,7 @@ import {
   Text,
   Platform,
   AppState,
+  Animated,
   NativeModules,
   NativeEventEmitter,
   TouchableOpacity,
@@ -37,8 +38,17 @@ import useDigitalWellbeing from './useDigitalWellbeing';
 import ManagedAppsList from './ManagedAppsList';
 import HomeScrollBudgetCard from './HomeScrollBudgetCard';
 import FreeBreakCard from './FreeBreakCard';
+import ActiveModeBanner from './ActiveModeBanner';
+import { MANAGED_APPS } from '../managedApps/manifest';
 import { styles, L } from './home.styles';
 import { formatTime, formatCount } from '../common/format';
+import useCountUp, {
+  BAR_FILL_DURATION_MS,
+  FILL_EASING,
+} from '../common/useCountUp';
+
+/** The always-on baseline mode — never surfaced as "a mode is active". */
+const DEFAULT_MODE_ID = 'default';
 
 const { VPNModule, SettingsModule } = NativeModules;
 const appBlockerEmitter = new NativeEventEmitter(VPNModule);
@@ -78,25 +88,48 @@ const ModesIcon = ({ color, size }) => (
   </Svg>
 );
 
+const JournalIcon = ({ color, size }) => (<Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} viewBox="0 0 24 24"><Path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2V3z"/><Path d="M8 7h8M8 11h8M8 15h5"/></Svg>);
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 /** Single stat card shown in the summary row */
-const StatCard = ({ label, value, loading }) => (
-  <View style={styles.statCard}>
-    {loading ? (
-      <View style={styles.skeletonValue} />
-    ) : (
-      <Text style={styles.statValue}>{value}</Text>
-    )}
-    <Text style={styles.statLabel}>{label}</Text>
-  </View>
-);
+const StatCard = ({ label, rawValue, formatFn, loading }) => {
+  const displayValue = useCountUp(rawValue, { enabled: !loading });
+  // rawValue == null means the metric is unavailable (not "still loading") —
+  // formatFn renders that as "—" directly rather than counting up from 0.
+  const valueText =
+    rawValue == null ? formatFn(rawValue) : formatFn(displayValue);
+
+  return (
+    <View style={styles.statCard}>
+      {loading ? (
+        <View style={styles.skeletonValue} />
+      ) : (
+        <Text style={styles.statValue}>{valueText}</Text>
+      )}
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+};
 
 /** One row in the top-apps list */
 const AppUsageRow = ({ appName, usageTimeMin, totalMin }) => {
   // Progress bar fill ratio relative to TOTAL screen time — conveys absolute
   // share rather than "tallest bar = 100%" which hides how big the top app is.
   const ratio = totalMin > 0 ? Math.min(1, usageTimeMin / totalMin) : 0;
+
+  // Fills in from 0 → ratio once on mount (rows only mount when real data
+  // replaces the loading skeleton — see the `loading` branch below).
+  const fillAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(fillAnim, {
+      toValue: ratio,
+      duration: BAR_FILL_DURATION_MS,
+      easing: FILL_EASING,
+      useNativeDriver: false,
+    }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <View style={styles.appUsageRow}>
@@ -107,10 +140,15 @@ const AppUsageRow = ({ appName, usageTimeMin, totalMin }) => {
         <Text style={styles.appUsageTime}>{formatTime(usageTimeMin)}</Text>
       </View>
       <View style={styles.usageBar}>
-        <View
+        <Animated.View
           style={[
             styles.usageBarFill,
-            { width: `${Math.round(ratio * 100)}%` },
+            {
+              width: fillAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: ['0%', '100%'],
+              }),
+            },
           ]}
         />
       </View>
@@ -120,7 +158,7 @@ const AppUsageRow = ({ appName, usageTimeMin, totalMin }) => {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-const Home = ({ navigation }) => {
+const Home = ({ navigation, onSetup }) => {
   const insets = useSafeAreaInsets();
   const [isMonitoring, setIsMonitoring] = useState(false);
 
@@ -134,7 +172,12 @@ const Home = ({ navigation }) => {
   // ── App policies + active mode (loaded from SharedPreferences) ───────────
   // appPolicies shape: { [pkg]: { app_open_intercept, reels_detection } }
   const [appPolicies, setAppPolicies] = useState({});
-  const [activeModeName, setActiveModeName] = useState(null);
+  // The active mode's full JSON (name, color, icon, schedule), or null when the
+  // baseline "default" mode is active — see loadActiveMode.
+  const [activeMode, setActiveMode] = useState(null);
+  // Forced-pause duration currently in force, resolved through the active mode's
+  // setting_overrides. Shown in the banner so the mode's effect is legible.
+  const [effectiveDelaySecs, setEffectiveDelaySecs] = useState(null);
 
   // ── Centralized settings loader ────────────────────────────────────────────
   // Loads app policies, active mode name, and triggers free break poll.
@@ -184,23 +227,52 @@ const Home = ({ navigation }) => {
     });
   }, []);
 
+  /**
+   * Loads the active mode as a full object (name, colour, icon, schedule) plus
+   * the forced-pause duration currently in force, so the banner can say what the
+   * mode is actually DOING — not just that something is on.
+   *
+   * The "default" mode is treated as no mode: it is the always-on baseline the
+   * user never deliberately entered, and the native layer suppresses its
+   * start/end notifications for the same reason.
+   */
   const loadActiveMode = useCallback(() => {
     SettingsModule.getActiveMode(modeId => {
-      if (!modeId) {
-        setActiveModeName(null);
+      if (!modeId || modeId === DEFAULT_MODE_ID) {
+        setActiveMode(null);
         return;
       }
       SettingsModule.getModes(json => {
         try {
           const modes = json ? JSON.parse(json) : {};
-          setActiveModeName(modes[modeId]?.name || null);
+          setActiveMode(modes[modeId] || null);
         } catch (e) {
           console.warn('[Home] parse modes failed:', e);
-          setActiveModeName(null);
+          setActiveMode(null);
         }
       });
+      // Effective (mode-resolved) pause duration — see BreakPrefs.getDelayTime.
+      SettingsModule.getDelayTime(secs => setEffectiveDelaySecs(secs));
     });
   }, []);
+
+  /**
+   * Ends the active mode. Native falls back to Default; the home-screen settings
+   * then edit Default again (there is no read-only lock — home always edits the
+   * active mode).
+   */
+  const handleEndMode = useCallback(async () => {
+    console.log('[Home] ending active mode → falling back to Default');
+    try {
+      await VPNModule.deactivateMode();
+      // Re-read both: the mode is gone, and the effective per-app policies it was
+      // overriding revert to the base ones shown in the Managed Apps list.
+      loadPolicies();
+      loadActiveMode();
+    } catch (e) {
+      console.warn('[Home] deactivateMode failed:', e);
+    }
+  }, [loadPolicies, loadActiveMode]);
 
   const reloadAll = useCallback(() => {
     console.log('[Home] reloadAll triggered');
@@ -237,6 +309,14 @@ const Home = ({ navigation }) => {
   const anyReelsOn = Object.values(appPolicies).some(
     p => p?.reels_detection === true,
   );
+
+  // Derived: display names of the apps currently being intercepted. appPolicies
+  // is already the EFFECTIVE policy (base + active mode overrides layered in
+  // loadPolicies), so this reflects what the mode is really doing.
+  const interceptedLabels = Object.keys(appPolicies)
+    .filter(pkg => appPolicies[pkg]?.app_open_intercept === true)
+    .map(pkg => MANAGED_APPS.find(a => a.pkg === pkg)?.label)
+    .filter(Boolean);
 
   // ── Scroll budget status (polled every 5s) ───────────────────────────────
   // Reads from SharedPreferences via VPNModule so the displayed status reflects
@@ -408,15 +488,7 @@ const Home = ({ navigation }) => {
         const savedApps = await new Promise(resolve => {
           SettingsModule.getBlockedApps(apps => resolve(apps));
         });
-        let appsSet = new Set(savedApps || []);
-        let updated = false;
-        ['com.instagram.android', 'com.google.android.youtube'].forEach(pkg => {
-          if (!appsSet.has(pkg)) {
-            appsSet.add(pkg);
-            updated = true;
-          }
-        });
-        if (updated) SettingsModule.saveBlockedApps(Array.from(appsSet));
+        const appsSet = new Set(savedApps || []);
 
         // Check if monitoring is enabled before starting — respects the
         // "App Open Intercept" toggle in Customize. Without this check,
@@ -435,7 +507,7 @@ const Home = ({ navigation }) => {
 
         // Sync widget if available
         if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
-          SettingsModule.updateWidgetStats(85, 45, 14, true);
+          SettingsModule.updateWidgetStats(85, 45, appsSet.size, monitoringEnabled !== false);
         }
       } catch (e) {
         console.error('[Home] init failed:', e);
@@ -494,6 +566,9 @@ const Home = ({ navigation }) => {
         <Text style={styles.appName}>Break</Text>
 
         <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.headerButton} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Reflections" onPress={() => navigation.navigate('Reflections')}>
+            <JournalIcon color={L.muted} size={21} />
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.headerButton}
             activeOpacity={0.7}
@@ -522,9 +597,11 @@ const Home = ({ navigation }) => {
         </View>
       </View>
 
-      {/* ── Status strip: monitoring + active mode ──────────────────── */}
-      {/* Gives the user an at-a-glance answer to "is the app actually doing
-                    anything right now?" without opening Customize or Modes. */}
+      {/* ── Status strip: monitoring ────────────────────────────────── */}
+      {/* Answers "is the app actually doing anything right now?" at a glance.
+          The active mode USED to be a second item here — a one-liner far too
+          quiet for something that overrides every setting and freezes the
+          settings screens. It now gets its own card below. */}
       <View style={styles.statusStrip}>
         <View style={styles.statusItem}>
           <View
@@ -539,14 +616,6 @@ const Home = ({ navigation }) => {
             {isMonitoring ? 'Monitoring on' : 'Monitoring off'}
           </Text>
         </View>
-        {activeModeName && (
-          <>
-            <Text style={styles.statusDivider}>·</Text>
-            <Text style={styles.statusText} numberOfLines={1}>
-              {activeModeName} mode
-            </Text>
-          </>
-        )}
       </View>
 
       {/* ── Main scrollable content ─────────────────────────────────── */}
@@ -555,18 +624,32 @@ const Home = ({ navigation }) => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* ── Active mode banner ────────────────────────────────── */}
+        {/* Also the escape hatch: while a mode is on, Customize and AppDetail are
+            read-only, and End is how the user gets back to Default to edit. */}
+        {activeMode && (
+          <ActiveModeBanner
+            mode={activeMode}
+            delaySecs={effectiveDelaySecs}
+            interceptedLabels={interceptedLabels}
+            onEnd={handleEndMode}
+          />
+        )}
+
         {/* ── Summary stat cards ────────────────────────────────── */}
         <View style={styles.statsRow}>
           <StatCard
             label="Screen Time"
-            value={formatTime(stats.totalScreenTimeMin)}
+            rawValue={stats.totalScreenTimeMin}
+            formatFn={formatTime}
             loading={loading}
           />
           {/* Only show unlock card if value is available (API 28+) */}
           {(loading || stats.unlockCount !== null) && (
             <StatCard
               label="Unlocks"
-              value={formatCount(stats.unlockCount)}
+              rawValue={stats.unlockCount}
+              formatFn={formatCount}
               loading={loading}
             />
           )}
@@ -574,14 +657,23 @@ const Home = ({ navigation }) => {
           {(loading || stats.notificationCount !== null) && (
             <StatCard
               label="Notifications"
-              value={formatCount(stats.notificationCount)}
+              rawValue={stats.notificationCount}
+              formatFn={formatCount}
               loading={loading}
             />
           )}
         </View>
 
-        {/* ── Scroll Budget card ─────────────────────────────── */}
-        <HomeScrollBudgetCard budgetStatus={budgetStatus} />
+        {/* ── Scroll Budget card (tap → Customize to edit budget) ─── */}
+        <HomeScrollBudgetCard
+          budgetStatus={budgetStatus}
+          onPress={() => {
+            console.log(
+              '[Home] scroll budget tapped — navigating to Customize',
+            );
+            navigation.navigate('Customize');
+          }}
+        />
 
         {/* ── Free Break card / button ──────────────────────────── */}
         <FreeBreakCard
@@ -642,6 +734,7 @@ const Home = ({ navigation }) => {
 
         {/* ── Managed Apps list ─────────────────────────────────── */}
         <ManagedAppsList
+          onSetup={onSetup}
           appPolicies={appPolicies}
           onSelect={pkg =>
             navigation.navigate('AppDetail', { packageName: pkg })

@@ -13,8 +13,6 @@
 - [Fragility Map](#fragility-map)
 - [Monetization Plan](#monetization-plan)
 - [Growth Strategy](#growth-strategy)
-- [30-Day Launch Sprint](#30-day-launch-sprint)
-- [Logging & Debugging Reference](#logging--debugging-reference)
 - [Key Design Decisions](#key-design-decisions)
 - [Future Features](#future-features-not-urgent)
 
@@ -37,13 +35,34 @@
   - Fix: see plan `.claude/plan/youtube-shorts-overlay-persistence-fix.md`. Three layers: (1) add `YouTubeDetector.detectStrict()` (Tier 1+2 only, no text walk) and use it for "still-in" / exit checks; (2) tighten Tier 3 with bounds check (reject nodes < 30% screen height or in bottom 15%) + seekbar-absence sanity; (3) replace `BudgetHeartbeat` `STICKY-FIX-HEARTBEAT` unconditional-true with a 2-tick failure counter using the strict detector.
   - Effort: 2-3 hours including manual QA on a real device.
 
+- [x] **B17: Mode `setting_overrides` were never applied — modes did not take over** ✅ 2026-07-14
+  - Files: `prefs/BreakPrefs.java`, `monitor/AppUsageMonitor.java`, `monitor/UsageStatsQuery.java` (new), `service/BreakVpnService.java`, `bridge/SettingsModule.java`, `bridge/VPNModule.java`, `components/shared/useDefaultModeGate.js` + `ModeGateBanner.js` (new), `components/Customize/customize.js`, `components/AppDetail/AppDetail.js`, `components/Home/ActiveModeBanner.js` (new)
+  - Root cause: `BreakPrefs.getEffectiveSettingInt()` — the resolver for a mode's `setting_overrides` — had **zero callers**. Every settings read hit raw SharedPreferences, so Study/Bedtime's `delay_time_seconds: 20` was persisted, shown in the mode editor, and then ignored at runtime. Only `policy_overrides` worked (via `isFeatureEnabled`).
+  - Fix applied: all settings reads now resolve through the active mode (precedence: **active mode → per-app → base global**). `AppUsageMonitor.reloadSettings()` re-reads its cached values on every mode transition, wired to the `UPDATE_BLOCKED_APPS` dispatch that `ModeManager.activate()` already sends.
+  - Also: **base settings are now editable ONLY in Default mode.** Customize + AppDetail go read-only behind a `ModeGateBanner` ("Switch to Default mode to change these settings") whenever another mode is active, and every native setter enforces the same rule independently (`[MODE_GATE]`; Promise setters reject with `MODE_ACTIVE`). Not gated: the Modes screen, the derived `blocked_apps` cache, and the safety locks (uninstall / settings / content-filter double-safe). Home's one-line mode text became a mode-coloured `ActiveModeBanner` with an **End** button — the escape hatch back to Default.
+  - Note: `UsageStatsQuery.java` extracted from `AppUsageMonitor` (which crossed the 1500-line hard limit; test_060).
+  - Verification: static 24 PASS / 0 FAIL, jest 40/40, Java compiles clean. **Device QA still pending** — exercise a scheduled mode activating while Customize is open.
+  - **⚠ Superseded 2026-07-24 by B18** — the Default-mode lock (`ModeGateBanner` / `MODE_ACTIVE`) it introduced was removed; see below.
+
+- [x] **B18: Home screen edits the ACTIVE mode; base-settings lock + mode-editor page removed** ✅ 2026-07-24
+  - Files: `prefs/BreakPrefs.java`, `bridge/SettingsModule.java`, `MainApplication.kt`, `mode/ModeSchedulerReceiver.java`, `components/shared/activeModeSettings.js` (new), `components/AppDetail/AppDetail.js`, `components/Customize/customize.js`, `components/Modes/ModesScreen.js`, `components/Modes/ModeMetaSheet.js` + `.styles.js` (new); **deleted** `components/Modes/ModeEditorModal.js` (+styles), `components/shared/useDefaultModeGate.js`, `components/shared/ModeGateBanner.js` (+styles)
+  - Root cause: home edits wrote to base `app_policies`/prefs, but the active mode's `policy_overrides` (Default ships its own) mask base in resolution — so the write was invisible ("doesn't save to the mode").
+  - Fix applied: home screens now edit **whatever mode is active** (activate-to-edit) via `saveAppSettingsToActiveMode` → `saveModes` (which re-syncs blocked_apps live). Removed the read-only lock (`isBaseSettingsEditable`/`assertBaseSettingsEditable` are inert stubs) and the full mode-editor page (replaced by a metadata-only `ModeMetaSheet`: name/icon/color/schedule). No data migration needed — the active mode's `policy_overrides` are read first and were already authoritative (base was masked), so nothing resets. Per-mode: per-app blocking + reels + forced-pause; global: scroll budget, browser safety, deletion prevention, settings-lock.
+  - Verification: eslint 0 errors, jest 38/38, static test_021 PASS / test_041 SKIP, `:app:compileDebugJavaWithJavac` clean. **Device QA pending** — editing a non-default mode from Home takes effect live, one forced-pause per mode, fresh install keeps Default's curated behavior.
+
+- [x] **B16: YouTube intercept fired twice (delay overlay + typing coach stacked)** ✅ 2026-07-13
+  - Files: `coach/YouTubeCoachGate.java` (new), `ReelsInterventionService.java`, `monitor/AppUsageMonitor.java`, `monitor/PopupDecision.java`, `prefs/BreakPrefs.java`, `bridge/SettingsModule.java`, `components/AppDetail/*`
+  - Fix applied: the typing coach is now YouTube's App Open Intercept STYLE — exactly one surface fires. Coach ON (toggle in AppDetail → App Open Intercept): typing gate at launch + re-fires every X minutes (per-app "Re-show overlay" interval; once-per-open disables re-fire); AppUsageMonitor suppresses the delay overlay (`[COACH_OWNS]`). Coach OFF: normal delay overlay, like Instagram. Trigger logic extracted to `YouTubeCoachGate` (service was >1500 lines). Unit tests: `PopupDecisionTest` 29/29.
+
 - [x] **B2: Migrate BreakVpnService away from VpnService** ✅ 2026-04-30
   - File: `android/app/src/main/java/com/Break/service/BreakVpnService.java`
   - Fix applied: Changed `extends VpnService` → `extends Service`. Removed `BIND_VPN_SERVICE` permission from AndroidManifest. Replaced VPN service declaration with a plain foreground service (`foregroundServiceType=specialUse`). Removed VPN intent-filter. Updated notification channel to `"BreakMonitoring"`, notification text to `"Break Active"`. Renamed actions to `START_MONITORING`/`STOP_MONITORING`. Stubbed `requestVpnPermission()` as a no-op in `VPNModule.java`.
 
-- [x] **B4: Null-check `action` in BreakVpnService.onStartCommand()** ✅ 2026-04-30
+- [ ] **B3: Set up agentic review system
   - File: `android/app/src/main/java/com/Break/service/BreakVpnService.java`
-  - Fix applied: Added null guards for both `intent` and `action` before the switch statement. Service now returns `START_STICKY` cleanly on OS-initiated restarts.
+  - Problem: We need to set up a system that can review the app and provide feedback on the code.
+  - Fix: Set up emulator and run the app on it with instagram installed and logged in. Create script to run the app and provide feedback on the code. Use agents to run tests and see what the issue is and provide feedback on the code.
+  - Effort: 2 days
 
 - [x] **B5: Set real versionCode/versionName** ✅ 2026-06-26
   - File: `android/app/build.gradle` (lines 85-86)
@@ -352,6 +371,7 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | Scheduled modes (AlarmManager) | ✅ Working | ModeManager.java, ModeSchedulerReceiver.java | customize.js | Mode schedule JSON |
 | Browser adult content blocker | ✅ Working | ContentFilterService.java | — (no UI) | Hardcoded domain list |
 | Deletion prevention (uninstall pause overlay) | ✅ Working | UninstallScreenDetector.java, UninstallLockOverlay.java | customize.js (Prevent deletion toggle) | `uninstall_lock_enabled` |
+| Typed-phrase deletion safeguard (optional) | ✅ Implemented 2026-10-12 (device verification pending) | UninstallPhrase.java, UninstallLockOverlay.java, BreakPrefs.java, SettingsModule.java | DeletionPhraseSection.js ("Require phrase to delete") | `uninstall_phrase_enabled`, `uninstall_phrase` (never logged) |
 | 24-hour Uninstall Lock | ✅ Implemented 2026-05-05 | UninstallLockManager.java, UninstallExpiryReceiver.java | DangerZone.js, useUninstallLock.js | `uninstall_lock_enabled`, `delete_request_at_wall`, `delete_request_expires_at` |
 | Settings Change Lock (opt-in per-scope edit lock) | ✅ Implemented 2026-06-22 (not built/run) — replaced Commitment Cooldown | lock/SettingsLockManager.java, bridge/SettingsModule.java | Customize/useSettingsLock.js, SettingsLockGate.js, SettingsLockSection.js, customize.js, AppDetail/AppDetail.js | `settings_lock_enabled`, `settings_lock_duration_ms`, `settings_lock_until` |
 | Screen time dashboard | ✅ Working | ScreenTimeTracker.java | home.js, useDigitalWellbeing.js | UsageStatsManager |
@@ -432,12 +452,12 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 ```
 FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 ──────────────────────────         ──────────────────────────────────
-✅ 1 app (Instagram OR YouTube)    ✅ Unlimited apps
-✅ App-open intercept only         ✅ Reels/Shorts surgical blocking
-✅ Default mode only               ✅ Custom modes (Study, Bedtime, etc.)
-❌ No scroll budget                ✅ Scroll budget + Free Break
-❌ No usage dashboard              ✅ Full digital wellbeing dashboard
-❌ No streak tracking              ✅ Streak tracking + share cards
+✅ 1 app (Instagram OR YouTube)        ✅ Unlimited apps
+✅ App-open intercept only             ✅ Reels/Shorts surgical blocking - ONLY IG(5m/60m)
+✅ Default mode only                   ✅ Custom modes (Study, Bedtime, etc.)
+✅ Scroll budget - ONLY IG(5m/60m)     ✅ Scroll budget + Free Break
+❌ No usage dashboard                  ✅ Full digital wellbeing dashboard
+❌ No streak tracking                  ✅ Streak tracking + share cards
 ```
 
 ### Implementation Checklist
@@ -487,97 +507,6 @@ FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 - [ ] Share card generator — branded image with streak + screen time
 - [ ] Referral system — "Invite a friend → both get 1 week Premium free"
 - [ ] Weekly push — "You were in the top 10% of focused users this week"
-
----
-
-## 30-Day Launch Sprint
-
-### Week 1: Stabilize
-
-| Day | Task | Bug IDs |
-|-----|------|---------|
-| 1 | Migrate BreakVpnService → regular Service | B2 |
-| 2 | Fix null-check, versionCode, empty view, verbose logging | B4, B5, B6, B9 |
-| 3 | Extract shared view ID constants. Generate release keystore. | B1, B8 |
-| 4 | Integrate Firebase Crashlytics + Analytics | — |
-| 5 | Full QA on physical device (Pixel + Samsung) | — |
-
-### Week 2: Monetization
-
-| Day | Task |
-|-----|------|
-| 6 | Design paywall screen UI |
-| 7 | Integrate Google Play Billing Library |
-| 8 | Implement entitlement check + premium gates |
-| 9 | Handle subscription lifecycle edge cases |
-| 10 | QA billing on internal test track |
-
-### Week 3: Polish & Growth
-
-| Day | Task |
-|-----|------|
-| 11 | Build dark mode |
-| 12 | Build streak tracker |
-| 13 | Build share card generator |
-| 14 | Record 3 TikTok launch videos |
-| 15 | Prepare Play Store listing (screenshots, description, privacy policy) |
-
-### Week 4: Launch
-
-| Day | Task |
-|-----|------|
-| 16 | Submit to internal testing track |
-| 17 | Promote to closed beta (20-50 testers) |
-| 18 | Fix top 3 beta bugs |
-| 19 | Promote to production track |
-| 20 | 🚀 **LAUNCH DAY** — post content, submit to Product Hunt |
-| 21-30 | Monitor crashes, respond to reviews, analyze conversion, plan v1.1 |
-
----
-
-## Logging & Debugging Reference
-
-### Log Tags
-
-| Tag | Component | Filter Command |
-|-----|-----------|----------------|
-| `REELS_WATCH` | ReelsInterventionService | `adb logcat -s REELS_WATCH` |
-| `APP_ROUTER` | AppEventRouter | `adb logcat -s APP_ROUTER` |
-| `CONTENT_FILTER` | ContentFilter | `adb logcat -s CONTENT_FILTER` |
-| `BROWSER_WATCH` | ContentFilterService | `adb logcat -s BROWSER_WATCH` |
-| `BreakVpnService` | BreakVpnService | `adb logcat -s BreakVpnService` |
-| `VPNModule` | VPNModule | `adb logcat -s VPNModule` |
-| `MODE_MGR` | ModeManager | `adb logcat -s MODE_MGR` |
-| `MODE_NOTIFY` | ModeNotifier | `adb logcat -s MODE_NOTIFY` |
-| `ScreenTimeTracker` | ScreenTimeTracker | `adb logcat -s ScreenTimeTracker` |
-| `ACC_PERM_GATE` | AccessibilityPermissionActivity | `adb logcat -s ACC_PERM_GATE` |
-| `SettingsModule` | SettingsModule | `adb logcat -s SettingsModule` |
-
-### Useful Compound Filters
-
-```bash
-# All Break logs
-adb logcat -s REELS_WATCH APP_ROUTER CONTENT_FILTER BreakVpnService VPNModule MODE_MGR MODE_NOTIFY
-
-# Just detection events (for debugging "it didn't block")
-adb logcat -s REELS_WATCH CONTENT_FILTER | findstr "EJECT\|confirmed\|DETECTED"
-
-# Config cache refreshes
-adb logcat -s APP_ROUTER | findstr "CONFIG_CACHE"
-
-# Free break lifecycle
-adb logcat -s "VPNModule:FreeBreak"
-
-# Policy changes
-adb logcat -s SettingsModule MODE_MGR | findstr "POLICY\|SYNC\|ACTIVATE"
-```
-
-### Nuclear Reset
-
-```bash
-# Clear all Break preferences (full reset to factory defaults)
-adb shell pm clear com.Break
-```
 
 ---
 

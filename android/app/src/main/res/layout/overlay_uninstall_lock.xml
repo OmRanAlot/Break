@@ -14,13 +14,19 @@
         are revealed together by UninstallLockOverlay after the 30s wait.
       - The rotating message TextView is updated in code every few seconds with
         encouraging, anti-deletion copy.
+      - The phrase prompt, input and error sit ABOVE the delete button so that
+        when the keyboard opens the field and the confirm button remain visible.
 
     View IDs used by UninstallLockOverlay.java:
-      uninstall_lock_headline   — static headline
-      uninstall_lock_message    — rotating motivational message (updated in code)
-      uninstall_lock_keep_btn   — primary "Keep Break" (GONE until 30s → HOME)
-      uninstall_lock_delete_btn — discouraged "give up" escape (GONE until 30s →
-                                  dismiss + suppress so the OS uninstall proceeds)
+      uninstall_lock_scroll       — ScrollView (needed by OverlayImeInsets)
+      uninstall_lock_headline     — static headline
+      uninstall_lock_message      — rotating motivational message (updated in code)
+      uninstall_lock_home_btn     — "Return to home" (always visible)
+      uninstall_lock_keep_btn     — primary "Keep Break" (GONE until 60s → HOME)
+      uninstall_lock_phrase_prompt — "Type your phrase to continue" (GONE until 60s)
+      uninstall_lock_phrase_input  — EditText for the phrase (GONE until 60s)
+      uninstall_lock_phrase_error  — error text for phrase mismatch (GONE by default)
+      uninstall_lock_delete_btn   — discouraged "give up" escape (GONE until 60s)
 
     WindowManager params set in UninstallLockOverlay.show():
       TYPE_ACCESSIBILITY_OVERLAY, MATCH_PARENT × MATCH_PARENT, Gravity.CENTER
@@ -31,6 +37,14 @@
     android:layout_height="match_parent"
     android:background="#FAFAFA">
 
+    <!-- ScrollView keeps all content — including the phrase field + buttons — reachable
+         above the keyboard. The id is required by OverlayImeInsets.attach(). -->
+    <ScrollView
+        android:id="@+id/uninstall_lock_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -38,7 +52,9 @@
         android:orientation="vertical"
         android:gravity="center"
         android:paddingStart="36dp"
-        android:paddingEnd="36dp">
+        android:paddingEnd="36dp"
+        android:paddingTop="24dp"
+        android:paddingBottom="24dp">
 
         <!-- Static headline — frames the moment without a countdown -->
         <TextView
@@ -65,12 +81,9 @@
             android:minHeight="120dp" />
 
         <!--
-            "Return to home": ALWAYS visible (not gated by the 30s wait). Lets
+            "Return to home": ALWAYS visible (not gated by the 60s wait). Lets
             the user leave to the launcher at any time. onClick →
-            GLOBAL_ACTION_HOME + dismiss. Pressing the physical Home button has
-            the same effect — ReelsInterventionService auto-dismisses this
-            overlay on any non-Settings window change (same logic as the
-            app-intercept overlay).
+            GLOBAL_ACTION_HOME + dismiss.
         -->
         <Button
             android:id="@+id/uninstall_lock_home_btn"
@@ -85,8 +98,7 @@
 
         <!--
             Primary "Keep Break": visibility=gone here. UninstallLockOverlay
-            flips it to VISIBLE only after UNINSTALL_LOCK_DURATION_MS so the user
-            must sit with the messages first. onClick → GLOBAL_ACTION_HOME.
+            flips it to VISIBLE only after UNINSTALL_LOCK_DURATION_MS (60s).
         -->
         <Button
             android:id="@+id/uninstall_lock_keep_btn"
@@ -101,8 +113,52 @@
             android:layout_marginTop="40dp" />
 
         <!--
+            Optional typed-phrase step — sits ABOVE the delete button so the
+            field + prompt remain visible when the keyboard opens. Both views
+            start GONE and are revealed by UninstallLockOverlay after the wait.
+            Validation is enforced natively on delete-button tap; visibility is
+            not the security gate. The field uses no-personalized-learning so
+            keyboards do not store the phrase.
+        -->
+        <TextView
+            android:id="@+id/uninstall_lock_phrase_prompt"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Type your phrase to continue"
+            android:textSize="14sp"
+            android:textColor="#525252"
+            android:gravity="center"
+            android:visibility="gone"
+            android:layout_marginTop="24dp" />
+
+        <EditText
+            android:id="@+id/uninstall_lock_phrase_input"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:inputType="text|textNoSuggestions"
+            android:imeOptions="flagNoPersonalizedLearning|actionDone"
+            android:importantForAutofill="no"
+            android:singleLine="true"
+            android:textSize="16sp"
+            android:textColor="#1A1A1A"
+            android:contentDescription="Deletion phrase"
+            android:visibility="gone"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:id="@+id/uninstall_lock_phrase_error"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="That phrase does not match. Try again."
+            android:textSize="13sp"
+            android:textColor="#B91C1C"
+            android:gravity="center"
+            android:visibility="gone"
+            android:layout_marginTop="6dp" />
+
+        <!--
             Discouraged escape: deliberately low-emphasis (muted outline, grey
-            text, loaded label). Also visibility=gone until the 30s wait. onClick
+            text, loaded label). Also visibility=gone until the 60s wait. onClick
             dismisses the lock and suppresses re-show so the system uninstall
             can actually proceed.
         -->
@@ -119,5 +175,7 @@
             android:layout_marginTop="14dp" />
 
     </LinearLayout>
+
+    </ScrollView>
 
 </FrameLayout>

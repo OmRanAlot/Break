@@ -3,7 +3,9 @@ import com.Break.prefs.BreakPrefs;
 import com.Break.mode.ModeManager;
 import com.Break.widget.BreakWidgetProvider;
 import com.Break.monitor.AppUsageMonitor;
+import com.Break.lock.ContentFilterGuard;
 import com.Break.lock.SettingsLockManager;
+import com.Break.uninstall.PhraseDisableGate;
 
 /*
  * SettingsModule
@@ -46,6 +48,15 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     private final ReactApplicationContext reactContext;
     private static final String TAG = "SettingsModule";
 
+    /**
+     * Rejection message returned to JS when a base-settings write is attempted
+     * while a non-default mode owns the settings. The UI blocks these writes
+     * up front; this is the enforcement backstop, so the copy still has to be
+     * user-presentable in case a screen ever surfaces it.
+     */
+    private static final String MODE_GATE_MESSAGE =
+            "A mode is active. Switch to Default mode to change these settings.";
+
     public SettingsModule(ReactApplicationContext reactContext) {
         super(reactContext);
         this.reactContext = reactContext;
@@ -55,6 +66,39 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @Override
     public String getName() {
         return "SettingsModule";
+    }
+
+    @ReactMethod
+    public void getInstalledSupportedApps(ReadableArray catalog, Promise promise) {
+        try {
+            promise.resolve(com.Break.onboarding.OnboardingStore.installed(reactContext,
+                    new org.json.JSONArray(catalog.toArrayList())).toString());
+        } catch (Exception e) { promise.reject("APP_LOOKUP_FAILED", "Could not check installed apps. Please retry.", e); }
+    }
+
+    @ReactMethod
+    public void getOnboardingState(Promise promise) {
+        try { promise.resolve(com.Break.onboarding.OnboardingStore.read(reactContext).toString()); }
+        catch (Exception e) { promise.reject("SETUP_READ_FAILED", e.getMessage(), e); }
+    }
+
+    @ReactMethod
+    public void saveOnboardingDraft(String json, Promise promise) {
+        try { promise.resolve(com.Break.onboarding.OnboardingStore.saveDraft(reactContext, json).toString()); }
+        catch (Exception e) { promise.reject("SETUP_SAVE_FAILED", e.getMessage(), e); }
+    }
+
+    @ReactMethod
+    public void beginAppSetup(Promise promise) {
+        try { promise.resolve(com.Break.onboarding.OnboardingStore.beginAppSetup(reactContext).toString()); }
+        catch (Exception e) { promise.reject("SETUP_BEGIN_FAILED", e.getMessage(), e); }
+    }
+
+    @ReactMethod
+    public void completeOnboarding(String json, ReadableArray catalog, Promise promise) {
+        try { promise.resolve(com.Break.onboarding.OnboardingStore.complete(reactContext, json,
+                    new org.json.JSONArray(catalog.toArrayList())).toString()); }
+        catch (Exception e) { promise.reject("SETUP_ACTIVATION_FAILED", e.getMessage(), e); }
     }
 
     @ReactMethod
@@ -78,6 +122,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveMonitoringEnabled(boolean enabled) {
         Log.d(TAG, "[SAVE] saveMonitoringEnabled called with enabled=" + enabled);
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveMonitoringEnabled")) return;
         BreakPrefs.get(reactContext).edit()
                 .putBoolean(BreakPrefs.KEY_MONITORING_ENABLED, enabled)
                 .apply();
@@ -107,6 +152,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveRedirectInstagramToBrowser(boolean value) {
         Log.d(TAG, "[SAVE] saveRedirectInstagramToBrowser called with value=" + value);
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveRedirectInstagramToBrowser")) return;
         SharedPreferences prefs = BreakPrefs.get(reactContext);
         prefs.edit().putBoolean(BreakPrefs.KEY_REDIRECT_INSTAGRAM, value).apply();
         Log.d(TAG, "[SAVE] redirect_instagram_to_browser=" + value + " saved");
@@ -136,6 +182,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         // Clamp to sane range before persisting
         int clamped = Math.max(1, Math.min(20, threshold));
         Log.d(TAG, "[SAVE] saveScrollThreshold threshold=" + threshold + " (clamped=" + clamped + ")");
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveScrollThreshold")) return;
         BreakPrefs.get(reactContext).edit()
                 .putInt(BreakPrefs.KEY_SCROLL_THRESHOLD, clamped)
                 .apply();
@@ -167,6 +214,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         int clampedWindow = Math.max(15, Math.min(120, windowMinutes));
         Log.d(TAG, "[SAVE] saveScrollBudget allowance=" + clampedAllowance + "min window="
                 + clampedWindow + "min");
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveScrollBudget")) return;
         BreakPrefs.get(reactContext).edit()
                 .putInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, clampedAllowance)
                 .putInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES, clampedWindow)
@@ -197,6 +245,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void saveHomeFeedPostLimit(int limit) {
         int clamped = Math.max(5, Math.min(100, limit));
         Log.d(TAG, "[SAVE] saveHomeFeedPostLimit limit=" + limit + " (clamped=" + clamped + ")");
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveHomeFeedPostLimit")) return;
         BreakPrefs.get(reactContext).edit()
                 .putInt(BreakPrefs.KEY_HOME_FEED_POST_LIMIT, clamped)
                 .apply();
@@ -222,6 +271,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveFreeBreakEnabled(boolean enabled) {
         Log.d(TAG, "[SAVE] saveFreeBreakEnabled called with enabled=" + enabled);
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveFreeBreakEnabled")) return;
         BreakPrefs.get(reactContext).edit()
                 .putBoolean(BreakPrefs.KEY_FREE_BREAK_ENABLED, enabled)
                 .apply();
@@ -263,6 +313,144 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         boolean enabled = BreakPrefs.isUninstallLockEnabled(reactContext);
         Log.d(TAG, "[GET] uninstall_lock_enabled=" + enabled);
         callback.invoke(enabled);
+    }
+
+    /**
+     * Reads the typed-phrase deletion safeguard: [toggle, phrase]. Phrase is
+     * returned to JS only so the user can edit it in Customize; it is NEVER logged.
+     */
+    @ReactMethod
+    public void getUninstallPhraseConfig(com.facebook.react.bridge.Callback callback) {
+        Log.d(TAG, "[GET] getUninstallPhraseConfig called");
+        callback.invoke(
+                BreakPrefs.getUninstallPhraseToggle(reactContext),
+                BreakPrefs.getUninstallPhrase(reactContext));
+    }
+
+    /**
+     * Saves the configured phrase (trimmed). Rejects blank values or attempts to
+     * change the phrase while the requirement is on (CHANGE_LOCKED). The phrase
+     * is never logged.
+     */
+    @ReactMethod
+    public void saveUninstallPhrase(String phrase, Promise promise) {
+        if (BreakPrefs.isUninstallPhraseChangeLocked(reactContext)) {
+            Log.d(TAG, "[SAVE] saveUninstallPhrase blocked — CHANGE_LOCKED");
+            promise.reject("CHANGE_LOCKED", "Use changeUninstallPhrase while requirement is on");
+            return;
+        }
+        boolean saved = BreakPrefs.setUninstallPhrase(reactContext, phrase);
+        Log.d(TAG, "[SAVE] saveUninstallPhrase saved=" + saved);
+        if (saved) {
+            promise.resolve(true);
+        } else {
+            promise.reject("EMPTY_PHRASE", "Phrase must not be blank");
+        }
+    }
+
+    /**
+     * Turns the phrase requirement ON. Rejected when no non-blank phrase is
+     * stored. Turning it OFF is not possible here — see
+     * requestUninstallPhraseDisable / confirmUninstallPhraseDisable.
+     */
+    @ReactMethod
+    public void enableUninstallPhrase(Promise promise) {
+        boolean ok = BreakPrefs.enableUninstallPhrase(reactContext);
+        Log.d(TAG, "[SAVE] enableUninstallPhrase ok=" + ok);
+        if (ok) {
+            promise.resolve(true);
+        } else {
+            promise.reject("EMPTY_PHRASE", "Set a non-blank phrase before enabling");
+        }
+    }
+
+    /**
+     * Builds {state: none|waiting|ready, readyAt, expiresAt} for a request time.
+     * Shared by both the disable and change flows.
+     */
+    private WritableMap phraseGateStatus(long requestAt) {
+        PhraseDisableGate.State s = PhraseDisableGate.stateOf(requestAt, System.currentTimeMillis());
+        WritableMap map = Arguments.createMap();
+        map.putString("state", s.name().toLowerCase());
+        map.putDouble("readyAt", requestAt == 0L ? 0 : PhraseDisableGate.readyAt(requestAt));
+        map.putDouble("expiresAt", requestAt == 0L ? 0 : PhraseDisableGate.expiresAt(requestAt));
+        return map;
+    }
+
+    /**
+     * First "turn off" attempt: starts the 1-hour wait (idempotent while a
+     * request is live) and returns its status. Does NOT turn anything off.
+     */
+    @ReactMethod
+    public void requestUninstallPhraseDisable(Promise promise) {
+        long at = BreakPrefs.requestUninstallPhraseDisable(reactContext);
+        Log.d(TAG, "[SAVE] requestUninstallPhraseDisable");
+        promise.resolve(phraseGateStatus(at));
+    }
+
+    /** Current disable-request status (state "none" when no live request). */
+    @ReactMethod
+    public void getUninstallPhraseDisableStatus(Promise promise) {
+        promise.resolve(phraseGateStatus(BreakPrefs.getUninstallPhraseDisableRequestAt(reactContext)));
+    }
+
+    /** Turns the requirement off — only succeeds inside the 15-minute READY window. */
+    @ReactMethod
+    public void confirmUninstallPhraseDisable(Promise promise) {
+        boolean ok = BreakPrefs.confirmUninstallPhraseDisable(reactContext);
+        Log.d(TAG, "[SAVE] confirmUninstallPhraseDisable ok=" + ok);
+        if (ok) {
+            promise.resolve(true);
+        } else {
+            promise.reject("NOT_READY", "Disable window is not open");
+        }
+    }
+
+    // ── Phrase change gate ────────────────────────────────────────────────────
+
+    /**
+     * First "change phrase" attempt: starts the 1-hour wait (idempotent while a
+     * request is live) and returns its status. Does NOT change anything.
+     */
+    @ReactMethod
+    public void requestUninstallPhraseChange(Promise promise) {
+        long at = BreakPrefs.requestUninstallPhraseChange(reactContext);
+        Log.d(TAG, "[SAVE] requestUninstallPhraseChange");
+        promise.resolve(phraseGateStatus(at));
+    }
+
+    /** Current change-request status (state "none" when no live request). */
+    @ReactMethod
+    public void getUninstallPhraseChangeStatus(Promise promise) {
+        promise.resolve(phraseGateStatus(BreakPrefs.getUninstallPhraseChangeRequestAt(reactContext)));
+    }
+
+    /**
+     * Atomically replaces the phrase. Only succeeds inside the 15-minute READY window
+     * AND when {@code current} matches the stored phrase. Neither phrase is logged.
+     * Rejects with NOT_READY, WRONG_CURRENT, BLANK, or SAME on failure.
+     */
+    @ReactMethod
+    public void changeUninstallPhrase(String current, String next, Promise promise) {
+        BreakPrefs.ChangeResult result = BreakPrefs.changeUninstallPhrase(reactContext, current, next);
+        Log.d(TAG, "[SAVE] changeUninstallPhrase result=" + result.name());
+        switch (result) {
+            case OK:
+                promise.resolve(true);
+                break;
+            case NOT_READY:
+                promise.reject("NOT_READY", "Change window is not open");
+                break;
+            case WRONG_CURRENT:
+                promise.reject("WRONG_CURRENT", "Current phrase does not match");
+                break;
+            case BLANK:
+                promise.reject("BLANK", "New phrase must not be blank");
+                break;
+            case SAME:
+                promise.reject("SAME", "New phrase is the same as the current phrase");
+                break;
+        }
     }
 
     @ReactMethod
@@ -310,6 +498,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveAppPolicies(String jsonString) {
         Log.d(TAG, "[POLICY] saveAppPolicies called");
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveAppPolicies")) return;
         try {
             BreakPrefs.get(reactContext).edit()
                     .putString(BreakPrefs.KEY_APP_POLICIES, jsonString)
@@ -332,6 +521,10 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void setAppFeature(String packageName, String featureKey, boolean enabled, Promise promise) {
         Log.d(TAG, "[POLICY] setAppFeature pkg=" + packageName + " " + featureKey + "=" + enabled);
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setAppFeature")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             BreakPrefs.setAppFeature(reactContext, packageName, featureKey, enabled);
             promise.resolve(true);
@@ -370,6 +563,10 @@ public class SettingsModule extends ReactContextBaseJavaModule {
      */
     @ReactMethod
     public void setAppInterceptSettings(String packageName, String message, int delaySecs, int popupDelayMin, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setAppInterceptSettings")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             int clampedNew = BreakPrefs.clampDelaySecs(delaySecs);
             BreakPrefs.setAppInterceptSettings(reactContext, packageName, message, clampedNew, popupDelayMin);
@@ -384,6 +581,10 @@ public class SettingsModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void setAllAppsInterceptSettings(String message, int delaySecs, int popupDelayMin, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setAllAppsInterceptSettings")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             int clampedNew = BreakPrefs.clampDelaySecs(delaySecs);
             BreakPrefs.setAllAppsInterceptSettings(reactContext, message, clampedNew, popupDelayMin);
@@ -393,6 +594,44 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         } catch (Exception e) {
             Log.e(TAG, "[INTERCEPT_SETTINGS] setAllAppsInterceptSettings failed: " + e.getMessage());
             promise.reject("SET_ALL_INTERCEPT_SETTINGS_FAILED", e.getMessage());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Mindful Viewing Coach (YouTube typing gate) toggle
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Whether the YouTube typing coach is enabled. When ON, the coach IS YouTube's
+     * App Open Intercept (initial + every-X-min re-fire); when OFF, YouTube gets
+     * the ordinary delay overlay like every other app.
+     */
+    @ReactMethod
+    public void getCoachEnabled(Promise promise) {
+        try {
+            boolean enabled = BreakPrefs.isCoachEnabled(reactContext);
+            Log.d(TAG, "[COACH] getCoachEnabled → " + enabled);
+            promise.resolve(enabled);
+        } catch (Exception e) {
+            Log.e(TAG, "[COACH] getCoachEnabled failed: " + e.getMessage());
+            promise.reject("GET_COACH_ENABLED_FAILED", e.getMessage());
+        }
+    }
+
+    /** Enables/disables the YouTube typing coach. Applied immediately. */
+    @ReactMethod
+    public void setCoachEnabled(boolean enabled, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setCoachEnabled")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
+        try {
+            BreakPrefs.setCoachEnabled(reactContext, enabled);
+            Log.i(TAG, "[COACH] setCoachEnabled → " + enabled);
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[COACH] setCoachEnabled failed: " + e.getMessage());
+            promise.reject("SET_COACH_ENABLED_FAILED", e.getMessage());
         }
     }
 
@@ -446,6 +685,84 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         SettingsLockManager.startLock(reactContext, scope);
     }
 
+    /**
+     * No-op. Re-arm is removed; grace is always 0. Kept as a safe bridge stub
+     * so any cached JS that still calls this does not throw.
+     */
+    @ReactMethod
+    public void setSettingsLockGrace(int hours) {
+        SettingsLockManager.setGraceMs(reactContext, 0L);
+        Log.d(TAG, "[SETTINGS_LOCK] setSettingsLockGrace no-op (re-arm removed)");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Content Filter double-safe guard (see com.Break.lock.ContentFilterGuard)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns the guard state as a JSON string:
+     * { doubleSafeEnabled, filterEnabled, state, layerOffAt, readyAt,
+     *   autoOnAt, now }.
+     */
+    @ReactMethod
+    public void getContentFilterGuardState(Callback callback) {
+        String json = ContentFilterGuard.getStateJson(reactContext);
+        Log.d(TAG, "[CF_GUARD] getContentFilterGuardState → " + json);
+        callback.invoke(json);
+    }
+
+    /**
+     * Enables or disables the Double-safe guard.
+     *
+     * Enabling: always instant if the filter is currently on. Clears any pending
+     *   wait and returns to PROTECTED.
+     *
+     * Disabling: only valid from PROTECTED. Immediately starts the lock-duration
+     *   wait (filter stays ON). Refused from LAYER_OFF_WAIT/LAYER_OFF_READY.
+     */
+    @ReactMethod
+    public void setContentFilterDoubleSafe(boolean enabled, Promise promise) {
+        boolean ok = ContentFilterGuard.setDoubleSafeEnabled(reactContext, enabled);
+        Log.d(TAG, "[CF_GUARD] setContentFilterDoubleSafe=" + enabled + " ok=" + ok);
+        if (ok) {
+            promise.resolve(true);
+        } else {
+            String reason = enabled
+                    ? "Cannot enable double-safe while the filter is off"
+                    : "Cannot start a new wait — already in LAYER_OFF_WAIT or LAYER_OFF_READY";
+            promise.reject("CF_GUARD_REFUSED", reason);
+        }
+    }
+
+    /**
+     * @deprecated No longer called by JS. The old two-step requestDisable path
+     *   is replaced by setContentFilterDoubleSafe(false). Kept as a safe stub.
+     */
+    @ReactMethod
+    public void requestContentFilterDisable(Promise promise) {
+        Log.w(TAG, "[CF_GUARD] requestContentFilterDisable is deprecated — use setContentFilterDoubleSafe(false)");
+        promise.reject("CF_GUARD_DEPRECATED", "Use setContentFilterDoubleSafe(false) instead");
+    }
+
+    /**
+     * @deprecated No longer called by JS. The old confirm-window step is removed.
+     *   Kept as a safe stub.
+     */
+    @ReactMethod
+    public void confirmContentFilterDisable(Promise promise) {
+        Log.w(TAG, "[CF_GUARD] confirmContentFilterDisable is deprecated — confirm window removed");
+        promise.reject("CF_GUARD_DEPRECATED", "Confirm window no longer exists");
+    }
+
+    /**
+     * @deprecated No longer called by JS. Kept as a safe stub.
+     */
+    @ReactMethod
+    public void cancelContentFilterDisable(Promise promise) {
+        Log.w(TAG, "[CF_GUARD] cancelContentFilterDisable is deprecated");
+        promise.resolve(true);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Mode methods
     // ═══════════════════════════════════════════════════════════════════════════
@@ -462,21 +779,78 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Saves the full modes JSON from React Native.
+     * Saves the full modes JSON from React Native, then reconciles schedules:
+     * cancels/re-registers AlarmManager alarms and activates/deactivates a mode
+     * if a changed schedule window covers (or no longer covers) right now.
+     * Without this, an edited schedule only took effect after an app restart
+     * or reboot — the original "Bedtime never triggers" bug.
      */
     @ReactMethod
     public void saveModes(String jsonString) {
         Log.d(TAG, "[MODE] saveModes called");
         try {
+            JSONObject oldModes = BreakPrefs.getModes(reactContext);
             JSONObject parsed = new JSONObject(jsonString);
             BreakPrefs.saveModes(reactContext, parsed);
-            // Schedule edits made in the UI must take effect immediately. Without
-            // this, AlarmManager schedules only refreshed on boot / app cold-start,
-            // so a newly edited start/end time was ignored until the next reboot.
-            ModeManager.reregisterAllAlarms(reactContext);
-            Log.d(TAG, "[MODE] saveModes saved + alarms re-registered");
+            ModeManager.onModesSaved(reactContext, oldModes);
+
+            // Home-screen edits now write into the ACTIVE mode's policy_overrides
+            // via this call. onModesSaved only reconciles schedules, so re-derive
+            // the effective blocked_apps set and push it to the live monitor —
+            // otherwise an edit to the active mode would need an app restart to
+            // take effect. (Activation already syncs; a pure edit-in-place did not.)
+            BreakPrefs.syncBlockedAppsFromPolicies(reactContext);
+            BreakPrefs.dispatchBlockedAppsReload(reactContext);
+            Log.d(TAG, "[MODE] saveModes saved + blocked_apps resynced");
         } catch (Exception e) {
             Log.e(TAG, "[MODE] saveModes error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Resolves true when the app may schedule exact alarms. Always true below
+     * Android 12 (API 31). On Android 14+ the SCHEDULE_EXACT_ALARM permission
+     * is DENIED by default, which makes mode schedules fire late (or seemingly
+     * not at all under Doze) — the UI should prompt the user to grant it.
+     */
+    @ReactMethod
+    public void canScheduleExactAlarms(Promise promise) {
+        try {
+            boolean allowed = true;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                android.app.AlarmManager alarmManager =
+                        (android.app.AlarmManager) reactContext.getSystemService(android.content.Context.ALARM_SERVICE);
+                allowed = alarmManager != null && alarmManager.canScheduleExactAlarms();
+            }
+            Log.d(TAG, "[MODE] canScheduleExactAlarms → " + allowed);
+            promise.resolve(allowed);
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] canScheduleExactAlarms error: " + e.getMessage());
+            promise.resolve(false);
+        }
+    }
+
+    /**
+     * Opens the system "Alarms & reminders" screen for this app (Android 12+)
+     * so the user can grant exact-alarm access. No-op on older versions.
+     * When granted, ModeSchedulerReceiver gets
+     * ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED and re-registers.
+     */
+    @ReactMethod
+    public void requestExactAlarmPermission(Promise promise) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                android.content.Intent intent =
+                        new android.content.Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+                intent.setData(android.net.Uri.parse("package:" + reactContext.getPackageName()));
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                reactContext.startActivity(intent);
+                Log.i(TAG, "[MODE] Opened exact-alarm permission settings");
+            }
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] requestExactAlarmPermission error: " + e.getMessage());
+            promise.reject("EXACT_ALARM_ERROR", e.getMessage());
         }
     }
 
@@ -543,13 +917,38 @@ public class SettingsModule extends ReactContextBaseJavaModule {
 
     /**
      * Enables or disables the browser content filter.
-     * ReelsInterventionService checks this pref on browser accessibility events.
+     *
+     * Enabling: always allowed. Clears any auto-on timer and stale wait state.
+     *
+     * Disabling: only allowed when isDirectDisableAllowed() — i.e. the guard is
+     *   off entirely (GUARD_OFF) or the lock-duration wait is complete
+     *   (LAYER_OFF_READY). If coming from LAYER_OFF_READY, stamps the 12h
+     *   auto-on timer via ContentFilterGuard.onFilterDisabled().
+     *   Refused while Double-safe is on (PROTECTED) or during the wait
+     *   (LAYER_OFF_WAIT) — JS shows explanation modals for those cases.
      */
     @ReactMethod
     public void saveContentFilterEnabled(boolean enabled, Promise promise) {
         Log.d(TAG, "[FILTER] saveContentFilterEnabled=" + enabled);
         try {
-            BreakPrefs.setContentFilterEnabled(reactContext, enabled);
+            if (!enabled) {
+                if (!ContentFilterGuard.isDirectDisableAllowed(reactContext)) {
+                    String state = ContentFilterGuard.getState(reactContext);
+                    Log.w(TAG, "[FILTER] disable refused — state=" + state);
+                    promise.reject("CF_GUARD_REFUSED",
+                            "Filter cannot be disabled in state: " + state);
+                    return;
+                }
+                // Coming from LAYER_OFF_READY: stamp the 12h auto-on timer.
+                String state = ContentFilterGuard.getState(reactContext);
+                BreakPrefs.setContentFilterEnabled(reactContext, false);
+                if (ContentFilterGuard.STATE_LAYER_OFF_READY.equals(state)) {
+                    ContentFilterGuard.onFilterDisabled(reactContext);
+                }
+            } else {
+                BreakPrefs.setContentFilterEnabled(reactContext, true);
+                ContentFilterGuard.onFilterEnabled(reactContext);
+            }
             promise.resolve(null);
         } catch (Exception e) {
             Log.e(TAG, "[FILTER] saveContentFilterEnabled error: " + e.getMessage());
@@ -606,16 +1005,42 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Retrieves the saved forced pause duration from SharedPreferences.
-     * Returns default (15 seconds) if not yet set.
+     * Retrieves the forced pause duration currently IN FORCE — the active mode's
+     * setting_override when it has one, otherwise the saved base value. The
+     * Customize slider must show what the app is actually doing, not a base value
+     * the mode is masking.
      */
     @ReactMethod
     public void getDelayTime(Callback callback) {
         Log.d(TAG, "[GET] getDelayTime called");
-        SharedPreferences prefs = BreakPrefs.get(reactContext);
-        int seconds = prefs.getInt(BreakPrefs.KEY_DELAY_TIME_SECONDS, 15);
-        Log.d(TAG, "[GET] delay_time_seconds=" + seconds);
+        int seconds = BreakPrefs.getEffectiveSettingInt(reactContext,
+                BreakPrefs.KEY_DELAY_TIME_SECONDS, BreakPrefs.DEFAULT_DELAY_TIME_SECONDS);
+        Log.d(TAG, "[GET] delay_time_seconds (effective)=" + seconds);
         callback.invoke(seconds);
+    }
+
+    // ── Default-mode gate ─────────────────────────────────────────────────────
+
+    /**
+     * Reports whether the base settings screens (Customize, AppDetail) may be
+     * edited right now. False whenever a non-default mode is active: that mode
+     * owns the app's behaviour, so editing the base underneath would be a silent
+     * no-op the user could not see.
+     *
+     * The JS layer calls this to render the read-only banner; the native setters
+     * enforce the same rule independently, so a stale UI can never write.
+     *
+     * Callback: (editable: boolean, activeModeId: String)
+     *
+     * Logging: [MODE_GATE]
+     */
+    @ReactMethod
+    public void getBaseSettingsEditable(Callback callback) {
+        boolean editable = BreakPrefs.isBaseSettingsEditable(reactContext);
+        String activeMode = BreakPrefs.getActiveMode(reactContext);
+        Log.d(TAG, "[MODE_GATE] getBaseSettingsEditable → " + editable
+                + " (activeMode='" + activeMode + "')");
+        callback.invoke(editable, activeMode);
     }
 
 }

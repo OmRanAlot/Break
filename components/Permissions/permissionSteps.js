@@ -19,7 +19,7 @@ export const PERMISSION_STEPS = [
     permKey: 'accessibility',
     Icon: TargetIcon,
     headline: 'Allow Accessibility',
-    body: 'This lets Break notice when you open one of your chosen apps so it can step in with a pause. It only ever watches for those apps.',
+    body: 'This lets Break notice when you open one of your chosen apps so it can step in with a pause. Android will ask you to enable Break?s accessibility service.',
     cta: 'Enable Accessibility',
     reassurance: (
       <>
@@ -47,7 +47,7 @@ export const PERMISSION_STEPS = [
     permKey: 'overlay',
     Icon: LayersIcon,
     headline: 'Allow Display Over Apps',
-    body: "This lets the breathing pause appear on top of the app you opened. It's the only thing Break ever draws on screen.",
+    body: "This lets the breathing pause appear on top of the app you opened. The pause uses the duration and reminder you chose.",
     cta: 'Enable Display Over Apps',
     reassurance: (
       <>

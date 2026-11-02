@@ -1,0 +1,12 @@
+version: "1"
+checkpoint: plan-to-tasks
+plan_items:
+  - id: "1.1"
+    tasks: ["T001", "T002", "T003"]
+  - id: "2.1"
+    tasks: ["T004", "T005", "T006", "T007"]
+  - id: "3.1"
+    tasks: ["T008", "T009", "T010", "T011"]
+  - id: "5.1"
+    tasks: ["T012", "T013", "T014"]
+status: complete

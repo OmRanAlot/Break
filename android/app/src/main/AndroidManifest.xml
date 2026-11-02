@@ -29,6 +29,14 @@
         we still see every launcher-visible app via this LAUNCHER intent declaration.
     -->
     <queries>
+        <!-- Supported-app catalog: components/managedApps/manifest.js. -->
+        <package android:name="com.instagram.android" />
+        <package android:name="com.google.android.youtube" />
+        <package android:name="com.zhiliaoapp.musically" />
+        <package android:name="com.reddit.frontpage" />
+        <package android:name="com.twitter.android" />
+        <package android:name="com.snapchat.android" />
+        <package android:name="com.facebook.katana" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -78,6 +86,9 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="com.Break.ACTION_MODE_START" />
                 <action android:name="com.Break.ACTION_MODE_END" />
+                <!-- Fired when the user grants "Alarms & reminders" (Android 12+),
+                     so pending inexact mode alarms get upgraded to exact ones -->
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
 

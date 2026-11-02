@@ -13,7 +13,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
-import ModeEditorModal from './ModeEditorModal';
+import ModeMetaSheet from './ModeMetaSheet';
+import ModeIcon from '../shared/ModeIcons';
 import { styles, L } from './ModesScreen.styles';
 
 if (
@@ -24,16 +25,6 @@ if (
 }
 
 const { SettingsModule, VPNModule } = require('react-native').NativeModules;
-
-const MODE_ICONS = {
-  book: '📖',
-  moon: '🌙',
-  dumbbell: '💪',
-  focus: '🎯',
-  coffee: '☕',
-  work: '💼',
-  default: '⚡',
-};
 
 const DEFAULT_MODES = {
   study: {
@@ -162,8 +153,8 @@ const generateModeSummary = mode => {
   return parts.join(', ') || 'No overrides';
 };
 
-const ModeCard = ({ modeId, mode, isActive, onToggleActive, onEdit }) => {
-  const icon = MODE_ICONS[mode.icon] || MODE_ICONS.default;
+const ModeCard = ({ modeId, mode, isActive, onToggleActive, onOpenDetails }) => {
+  const accent = mode.color || L.charcoal;
 
   return (
     <View
@@ -174,7 +165,9 @@ const ModeCard = ({ modeId, mode, isActive, onToggleActive, onEdit }) => {
       ]}
     >
       <View style={styles.modeCardHeader}>
-        <Text style={styles.modeIcon}>{icon}</Text>
+        <View style={[styles.modeIconTile, { backgroundColor: accent + '1F' }]}>
+          <ModeIcon name={mode.icon} size={22} color={accent} />
+        </View>
         <View style={styles.modeCardInfo}>
           <Text style={styles.modeCardName}>{mode.name}</Text>
           <Text style={styles.modeCardSummary} numberOfLines={2}>
@@ -190,12 +183,10 @@ const ModeCard = ({ modeId, mode, isActive, onToggleActive, onEdit }) => {
       </View>
 
       <TouchableOpacity
-        onPress={() => onEdit(modeId, mode)}
+        onPress={() => onOpenDetails(modeId, mode)}
         style={styles.modeEditLink}
       >
-        <Text style={styles.modeEditLinkText}>
-          {mode.enabled ? 'Edit active mode ▸' : 'Edit ▸'}
-        </Text>
+        <Text style={styles.modeEditLinkText}>Rename &amp; schedule ▸</Text>
       </TouchableOpacity>
 
       {isActive && (
@@ -341,7 +332,9 @@ const ModesScreen = ({ navigation }) => {
     [modes, showSaved],
   );
 
-  const handleEdit = useCallback((modeId, mode) => {
+  // Opens the metadata sheet (name / icon / colour / schedule) for a mode. The
+  // mode's blocking is edited from the home screen while it is active, not here.
+  const handleOpenDetails = useCallback((modeId, mode) => {
     setEditingModeId(modeId);
     setEditingMode(mode);
     setIsNewMode(false);
@@ -363,30 +356,35 @@ const ModesScreen = ({ navigation }) => {
     setModalVisible(true);
   }, []);
 
+  // Note: we deliberately do NOT prompt for the Android "Alarms & reminders"
+  // (exact alarm) permission here. Scheduled modes fall back to inexact
+  // alarms natively (ModeManager.setExactAlarm), which is good enough and
+  // avoids an extra permission ask during mode creation.
   const handleSave = useCallback(
-    (modeId, updatedMode) => {
-      console.log('[ModesScreen] saving mode:', modeId);
+    (modeId, updatedMeta) => {
+      console.log('[ModesScreen] saving mode metadata:', modeId);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
-      const updatedModes = { ...modes, [modeId]: updatedMode };
+      // Merge ONLY the metadata (name/icon/color/schedule) onto the existing
+      // mode so its policy_overrides / setting_overrides — edited from the home
+      // screen — are preserved. A brand-new mode starts from an empty-override
+      // skeleton so it has a valid shape before the user activates + edits it.
+      const base = modes[modeId] || {
+        enabled: false,
+        policy_overrides: {},
+        setting_overrides: { delay_time_seconds: 15 },
+      };
+      const updatedModes = {
+        ...modes,
+        [modeId]: { ...base, ...updatedMeta },
+      };
       setModes(updatedModes);
       SettingsModule.saveModes(JSON.stringify(updatedModes));
-
-      // If we just edited the ACTIVE mode, re-activate it natively so the new
-      // policy_overrides resync blocked_apps + overlay settings immediately —
-      // the same path AppDetail uses after a per-app edit. Without this the
-      // native monitor keeps the pre-edit blocked set until something else
-      // re-triggers a sync.
-      if (modeId === activeModeId) {
-        Promise.resolve(VPNModule.activateMode(activeModeId)).catch(e =>
-          console.warn('[ModesScreen] re-activate after save failed:', e),
-        );
-      }
 
       setModalVisible(false);
       showSaved();
     },
-    [modes, activeModeId, showSaved],
+    [modes, showSaved],
   );
 
   const handleDelete = useCallback(
@@ -461,8 +459,8 @@ const ModesScreen = ({ navigation }) => {
 
         <Text style={styles.sectionLabel}>YOUR MODES</Text>
         <Text style={styles.sectionCaption}>
-          Enable a mode to override your base settings. Tap a card to customize
-          it.
+          Turn a mode on to make it active, then edit what it blocks from the
+          home screen. Use “Rename &amp; schedule” to change its name or times.
         </Text>
 
         {modesList.map(([id, mode]) => (
@@ -472,7 +470,7 @@ const ModesScreen = ({ navigation }) => {
             mode={mode}
             isActive={id === activeModeId}
             onToggleActive={handleToggleActive}
-            onEdit={handleEdit}
+            onOpenDetails={handleOpenDetails}
           />
         ))}
 
@@ -504,9 +502,10 @@ const ModesScreen = ({ navigation }) => {
         <View style={styles.infoSection}>
           <Text style={styles.infoTitle}>How modes work</Text>
           <Text style={styles.infoText}>
-            Modes temporarily override your base settings when enabled. You can
-            schedule modes to activate automatically at specific times, or
-            enable them manually for on-demand control.
+            Only one mode is active at a time. Whatever mode is on is the one the
+            home screen edits — turn a mode on, then change what it blocks from
+            the home screen and its managed apps. Schedules can turn a mode on
+            automatically at set times.
           </Text>
         </View>
       </ScrollView>
@@ -518,7 +517,7 @@ const ModesScreen = ({ navigation }) => {
         <Text style={styles.savedToastText}>Saved</Text>
       </Animated.View>
 
-      <ModeEditorModal
+      <ModeMetaSheet
         visible={modalVisible}
         mode={editingMode}
         modeId={editingModeId}

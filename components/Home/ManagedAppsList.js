@@ -9,10 +9,16 @@
  * Logging prefix: [ManagedAppsList]
  */
 
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+} from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { MANAGED_APPS } from '../managedApps/manifest';
+import { useInstalledApps } from '../managedApps/installedApps';
 import { Monogram } from '../Permissions/onboarding/components';
 
 const L = {
@@ -57,46 +63,82 @@ function statusLine(policy, appEntry) {
   return active.length ? `On · ${active.join(' + ')}` : 'On';
 }
 
-const ManagedAppsList = ({ appPolicies = {}, onSelect }) => {
+const ManagedAppsList = ({ appPolicies = {}, onSelect, onSetup }) => {
+  const { apps, loading, error, refresh } = useInstalledApps();
+  const [setupError, setSetupError] = useState('');
+  const starting = useRef(false);
   return (
     <View style={styles.container}>
       <Text style={styles.sectionTitle}>Managed Apps</Text>
+      {onSetup && (
+        <TouchableOpacity
+          accessibilityRole="button"
+          onPress={async () => {
+            if (starting.current) return;
+            starting.current = true;
+            try {
+              await onSetup();
+            } catch (e) {
+              setSetupError(e.message);
+            } finally {
+              starting.current = false;
+            }
+          }}
+        >
+          <Text style={styles.appLabel}>Set up opening pauses</Text>
+        </TouchableOpacity>
+      )}
+      {setupError ? <Text accessibilityRole="alert">{setupError}</Text> : null}
+      {loading ? (
+        <ActivityIndicator />
+      ) : error ? (
+        <>
+          <Text style={styles.statusText}>{error}</Text>
+          <TouchableOpacity accessibilityRole="button" onPress={refresh}>
+            <Text>Retry app lookup</Text>
+          </TouchableOpacity>
+        </>
+      ) : apps.length === 0 ? (
+        <Text style={styles.statusText}>No supported apps are installed.</Text>
+      ) : null}
       <View style={styles.card}>
-        {MANAGED_APPS.map((app, index) => {
-          const policy = appPolicies[app.pkg];
-          const status = statusLine(policy, app);
-          const isLast = index === MANAGED_APPS.length - 1;
-          // Tile is "active" (dark) when the app has any intervention on, matching
-          // the onboarding selection styling.
-          const isActive = Boolean(policy) && policy.enabled !== false;
+        {!loading &&
+          !error &&
+          apps.map((app, index) => {
+            const policy = appPolicies[app.pkg];
+            const status = statusLine(policy, app);
+            const isLast = index === apps.length - 1;
+            // Tile is "active" (dark) when the app has any intervention on, matching
+            // the onboarding selection styling.
+            const isActive = Boolean(policy) && policy.enabled !== false;
 
-          return (
-            <TouchableOpacity
-              key={app.pkg}
-              style={[styles.row, !isLast && styles.rowBorder]}
-              onPress={() => {
-                console.log('[ManagedAppsList] tapped:', app.pkg);
-                onSelect(app.pkg);
-              }}
-              activeOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityLabel={`${app.label} settings`}
-            >
-              <Monogram
-                text={app.monogram}
-                active={isActive}
-                size={36}
-                radius={10}
-                fontSize={14}
-              />
-              <View style={styles.rowContent}>
-                <Text style={styles.appLabel}>{app.label}</Text>
-                <Text style={styles.statusText}>{status}</Text>
-              </View>
-              <ChevronIcon />
-            </TouchableOpacity>
-          );
-        })}
+            return (
+              <TouchableOpacity
+                key={app.pkg}
+                style={[styles.row, !isLast && styles.rowBorder]}
+                onPress={() => {
+                  console.log('[ManagedAppsList] tapped:', app.pkg);
+                  onSelect(app.pkg);
+                }}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel={`${app.label} settings`}
+              >
+                <Monogram
+                  text={app.monogram}
+                  active={isActive}
+                  size={36}
+                  radius={10}
+                  fontSize={14}
+                />
+                <View style={styles.rowContent}>
+                  <Text style={styles.appLabel}>{app.label}</Text>
+                  <Text style={styles.statusText}>{status}</Text>
+                </View>
+                <ChevronIcon />
+              </TouchableOpacity>
+            );
+          })}
       </View>
     </View>
   );

@@ -7,6 +7,8 @@ import android.util.Log;
 
 import com.Break.service.BreakVpnService;
 import com.Break.monitor.ServiceHelper;
+import com.Break.uninstall.PhraseDisableGate;
+import com.Break.uninstall.UninstallPhrase;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -33,6 +35,7 @@ import java.util.Set;
  * Logging: No logging — this is a constants/utility-only class.
  */
 public final class BreakPrefs {
+    public static final String KEY_ONBOARDING_STATE = "onboarding_state";
 
     // ── Preferences file name ────────────────────────────────────────────────
     public static final String PREFS_NAME = "Break_prefs";
@@ -154,6 +157,57 @@ public final class BreakPrefs {
     // Browser content filter — whether ReelsInterventionService redirects blocked domains
     public static final String KEY_CONTENT_FILTER_ENABLED = "content_filter_enabled";
 
+    // ── Mindful Viewing Coach (YouTube launch gate) ───────────────────────────
+    // On-device coach: at YouTube launch the user waits the intercept delay, then
+    // types why they're opening the app. A deterministic engine
+    // (com.Break.coach.VerdictEngine) returns approve/probe/challenge; the message
+    // is phrased on-device. These keys hold the coach's config + session state.
+    /** Friction level: "chill" | "balanced" | "strict". Read via {@link Mode}. */
+    public static final String KEY_COACH_MODE = "coach_mode";
+    /** Master toggle for the YouTube viewing coach (default ON). */
+    public static final String KEY_COACH_ENABLED = "coach_enabled";
+    /** Epoch ms when the current YouTube viewing session began (0 = none). */
+    public static final String KEY_COACH_SESSION_START = "coach_session_start";
+    /** Videos opened in the current session (incremented on player transitions). */
+    public static final String KEY_COACH_VIDEOS_WATCHED = "coach_videos_watched";
+    /** Epoch ms YouTube was last seen foreground — drives session boundary. */
+    public static final String KEY_COACH_LAST_YT_FOREGROUND = "coach_last_yt_foreground";
+    /** True once the coach overlay has run for the current session (show-once). */
+    public static final String KEY_COACH_SHOWN_FOR_SESSION = "coach_shown_for_session";
+    /** Times the user pushed past a probe/challenge today (resets at midnight). */
+    public static final String KEY_COACH_OVERRIDES_TODAY = "coach_overrides_today";
+    /** "yyyy-MM-dd" the override counter belongs to; rolls the counter on change. */
+    public static final String KEY_COACH_OVERRIDES_DATE = "coach_overrides_date";
+    /** True while the coach overlay is currently attached (read across processes). */
+    public static final String KEY_COACH_OVERLAY_VISIBLE = "coach_overlay_visible";
+    /** Epoch ms the coach overlay was last actually shown — drives the re-show cooldown. */
+    public static final String KEY_COACH_LAST_SHOWN_AT = "coach_last_shown_at";
+
+    /** A gap this long with YouTube not foregrounded starts a fresh session. */
+    public static final long COACH_SESSION_GAP_MS = 30L * 60 * 1000;
+    /**
+     * Minimum gap since YouTube was last foreground for a WINDOW_STATE_CHANGED event
+     * to count as a genuine (re)launch rather than YouTube's own internal window churn.
+     * YouTube's internal transitions fire back-to-back within a few hundred ms; a real
+     * return from elsewhere (Home, another app, screen off) always exceeds this.
+     */
+    public static final long COACH_RELAUNCH_GAP_MS = 1500L;
+    /**
+     * Minimum time between two coach overlay *shows*, so a single launch that emits
+     * several WINDOW_STATE_CHANGED events cannot double-fire the overlay. Independent
+     * of {@link #COACH_RELAUNCH_GAP_MS}, which decides whether an event is a launch.
+     */
+    public static final long COACH_RESHOW_COOLDOWN_MS = 60_000L;
+    /**
+     * Grace window AppUsageMonitor waits, once YouTube is foreground and blocked, for
+     * the coach to actually show before falling back to the ordinary delay overlay.
+     * Defense in depth: guarantees YouTube is never left with zero interception if the
+     * coach fails to fire.
+     */
+    public static final long COACH_FALLBACK_GRACE_MS = 4000L;
+    /** Default friction level when the user has not chosen one. */
+    public static final String DEFAULT_COACH_MODE = "balanced";
+
     // ── Uninstall Lock ────────────────────────────────────────────────────────
     // Opt-in 24-hour cooldown before Break can be uninstalled. Plan:
     // .claude/plan/24h-delete-lock.md
@@ -163,6 +217,18 @@ public final class BreakPrefs {
     public static final String KEY_UNINSTALL_LOCK_ENABLED = "uninstall_lock_enabled";
     public static final String KEY_UNINSTALL_LOCK_CONSENT_VERSION = "uninstall_lock_consent_version";
     public static final String KEY_UNINSTALL_LOCK_CONSENT_AT = "uninstall_lock_consent_at";
+
+    // Optional typed-phrase confirmation after the 60s uninstall pause.
+    // Default OFF. Phrase is local-only and must NEVER be logged.
+    // Like the keys above, never include these in a "reset to defaults" routine.
+    public static final String KEY_UNINSTALL_PHRASE_ENABLED = "uninstall_phrase_enabled";
+    public static final String KEY_UNINSTALL_PHRASE = "uninstall_phrase";
+    // Epoch ms of the first "turn off" attempt; drives the 1h wait + 15min window
+    // (see PhraseDisableGate). Never wipe in a reset-to-defaults routine.
+    public static final String KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT = "uninstall_phrase_disable_request_at";
+    // Epoch ms of the first "change phrase" attempt; drives the same 1h wait + 15min
+    // window (see PhraseDisableGate). Never wipe in a reset-to-defaults routine.
+    public static final String KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT = "uninstall_phrase_change_request_at";
 
     // Twin-clock state for tamper detection (see UninstallLockManager).
     // request_at_wall = System.currentTimeMillis() captured at requestDelete()
@@ -174,7 +240,7 @@ public final class BreakPrefs {
     public static final String KEY_DELETE_REQUEST_EXPIRES_AT = "delete_request_expires_at";
     public static final String KEY_DELETE_REQUEST_BOOT_ID = "delete_request_boot_id";
 
-    public static final long UNINSTALL_LOCK_DURATION_MS = 60_000L; // 30-second delay
+    public static final long UNINSTALL_LOCK_DURATION_MS = 60_000L; // 60-second pause before Keep/Delete appear
     public static final String UNINSTALL_LOCK_CONSENT_VERSION_CURRENT = "2026-05-12-v1";
 
     // ── Configuration Cooldown ("Commitment Lock") ─────────────────────────────
@@ -218,6 +284,45 @@ public final class BreakPrefs {
     public static final long MIN_SETTINGS_LOCK_MS = 24L * 60 * 60 * 1000;
     /** Maximum lock length the duration picker allows: 7 days (1 week). */
     public static final long MAX_SETTINGS_LOCK_MS = 7L * 24 * 60 * 60 * 1000;
+
+    // ── Settings Lock grace (legacy, unused) ──────────────────────────────────
+    // Re-arm is removed. The key is kept for SharedPreferences compatibility;
+    // SettingsLockManager.getGraceMs always returns 0 regardless of the stored
+    // value. DEFAULT is 0 so any fresh install or cleared storage starts correct.
+    public static final String KEY_SETTINGS_LOCK_GRACE_MS = "settings_lock_grace_ms";
+
+    /** Always 0 — re-arm is removed. */
+    public static final long DEFAULT_SETTINGS_LOCK_GRACE_MS = 0L;
+    /** Unused — kept to avoid breaking any residual references. */
+    public static final long MAX_SETTINGS_LOCK_GRACE_MS = 24L * 60 * 60 * 1000;
+
+    // ── Content Filter double-safe disable ─────────────────────────────────────
+    // Opt-in two-layer protection for the browser content filter.
+    //
+    // Layer 1 — Double-safe toggle:
+    //   Turning it OFF is instant but starts a mandatory wait equal to the
+    //   Settings Change Lock duration. Filter stays ON during the wait.
+    //   KEY_CF_PENDING_DISABLE_AT = epoch-ms when the layer was turned off.
+    //   KEY_CF_PENDING_READY_AT   = epoch-ms when the filter disable is allowed.
+    //
+    // Layer 2 — Content filter switch:
+    //   Only disableable after the wait (state = LAYER_OFF_READY). Disabling
+    //   stamps KEY_CF_AUTO_ON_AT = now + CF_AUTO_ON_MS (12h). The filter re-
+    //   enables lazily on the next ContentFilterGuard.getState() call.
+    //
+    // CRITICAL: never wipe these keys in a "reset to defaults" routine — doing
+    // so would shortcut (or spuriously restart) an active wait/auto-on timer.
+    public static final String KEY_CF_DOUBLE_SAFE_ENABLED = "content_filter_double_safe_enabled";
+    public static final String KEY_CF_PENDING_DISABLE_AT  = "content_filter_pending_disable_at";
+    public static final String KEY_CF_PENDING_READY_AT    = "content_filter_pending_ready_at";
+    public static final String KEY_CF_AUTO_ON_AT          = "content_filter_auto_on_at";
+
+    /** How long the content filter stays off before auto-reenabling: 12 hours. */
+    public static final long CF_AUTO_ON_MS = 12L * 60 * 60 * 1000;
+
+    /** @deprecated No longer used — confirm window removed. Kept for compile compat. */
+    @Deprecated
+    public static final long CF_INTERNAL_CONFIRM_WINDOW_MS = 4L * 60 * 60 * 1000;
 
     // ── Default values ───────────────────────────────────────────────────────
     public static final int DEFAULT_DELAY_TIME_SECONDS = 15;
@@ -371,10 +476,14 @@ public final class BreakPrefs {
         return Math.max(5, Math.min(120, seconds));
     }
 
-    /** Global default countdown from Customize → Forced Pause Duration. */
+    /**
+     * Global default countdown from Customize → Forced Pause Duration, with the
+     * active mode's {@code setting_overrides} layered on top. A mode that sets
+     * delay_time_seconds (e.g. Bedtime's 20s) wins over the base pref.
+     */
     public static int getGlobalDelaySecs(Context context) {
         return clampDelaySecs(
-                get(context).getInt(KEY_DELAY_TIME_SECONDS, DEFAULT_DELAY_TIME_SECONDS));
+                getEffectiveSettingInt(context, KEY_DELAY_TIME_SECONDS, DEFAULT_DELAY_TIME_SECONDS));
     }
 
     /**
@@ -385,23 +494,48 @@ public final class BreakPrefs {
     }
 
     /**
-     * Effective overlay countdown ("Forced Pause Duration") for an app.
+     * Effective re-show interval (minutes) for one app: per-app
+     * {@code popup_delay_min} when configured, otherwise the global
+     * {@link #KEY_POPUP_DELAY_MINUTES}. May return the once-per-open sentinel
+     * ({@code Integer.MAX_VALUE}); callers normalize via
+     * {@code PopupDecision.normalizeDelayMinutes()}.
      *
-     * Precedence (most specific wins): active-mode setting_override →
-     * per-app intercept delay_secs → global default. The mode override is checked
-     * FIRST so an enabled mode genuinely overrides base/per-app settings — this is
-     * what makes the mode editor's "Forced Pause Duration" actually take effect.
+     * Mirrors AppUsageMonitor's private per-app lookup so the YouTube typing
+     * coach (ReelsInterventionService) re-fires on the SAME "Every X min"
+     * setting the delay overlay uses — one adjustable cadence for both styles.
+     */
+    public static int getEffectivePopupDelayMinutes(Context context, String packageName) {
+        // Active mode's setting_overrides win outright — same precedence as
+        // getEffectiveDelaySecs.
+        Integer modeOverride = getModeSettingOverrideInt(context, KEY_POPUP_DELAY_MINUTES);
+        if (modeOverride != null) {
+            return modeOverride;
+        }
+        JSONObject entry = getAppInterceptSettings(context, packageName);
+        if (entry.has("popup_delay_min")) {
+            return entry.optInt("popup_delay_min", DEFAULT_POPUP_DELAY_MINUTES);
+        }
+        return get(context).getInt(KEY_POPUP_DELAY_MINUTES, DEFAULT_POPUP_DELAY_MINUTES);
+    }
+
+    /**
+     * Effective overlay countdown for one app.
      *
-     * Used by the delay overlay countdown ring and Continue button timer.
+     * Resolution: active mode setting_override → per-app delay_secs → global base.
+     * The active mode is the OUTERMOST layer by design: while a mode is on it
+     * "takes over", so a mode that pins delay_time_seconds overrides even a
+     * per-app override the user set in AppDetail. Base settings are only editable
+     * in Default mode anyway (see {@link #isBaseSettingsEditable}), so a per-app
+     * value can never have been set while the mode was active.
      */
     public static int getEffectiveDelaySecs(Context context, String packageName) {
-        // 1. Active mode wins — modes override base/per-app settings.
-        Integer modeDelay = getModeSettingOverrideInt(context, KEY_DELAY_TIME_SECONDS);
-        if (modeDelay != null) {
-            return clampDelaySecs(modeDelay);
+        // 1. Active mode's setting_overrides win outright.
+        Integer modeOverride = getModeSettingOverrideInt(context, KEY_DELAY_TIME_SECONDS);
+        if (modeOverride != null) {
+            return clampDelaySecs(modeOverride);
         }
 
-        // 2. Per-app intercept override.
+        // 2. Per-app override from AppDetail's intercept customization.
         try {
             JSONObject all = getInterceptSettingsJson(context);
             if (all.has(packageName)) {
@@ -415,7 +549,7 @@ public final class BreakPrefs {
                     + ": " + e.getMessage());
         }
 
-        // 3. Global default.
+        // 3. Global base pref.
         return getGlobalDelaySecs(context);
     }
 
@@ -515,36 +649,95 @@ public final class BreakPrefs {
     }
 
     /**
+     * Returns the active mode's override for a global int setting, or null when
+     * no mode is active or the active mode does not override this key. Null means
+     * "fall through to the next layer" — callers decide what that layer is.
+     *
+     * This is the single place the setting_overrides JSON is walked; every
+     * effective-value getter routes through it so mode precedence stays uniform.
+     */
+    public static Integer getModeSettingOverrideInt(Context context, String settingKey) {
+        SharedPreferences prefs = get(context);
+        String activeMode = prefs.getString(KEY_ACTIVE_MODE, "");
+        if (activeMode == null || activeMode.isEmpty()) {
+            return null;
+        }
+        try {
+            String modesJson = prefs.getString(KEY_MODES, "");
+            if (modesJson == null || modesJson.isEmpty()) {
+                return null;
+            }
+            JSONObject modes = new JSONObject(modesJson);
+            if (!modes.has(activeMode)) {
+                return null;
+            }
+            JSONObject mode = modes.getJSONObject(activeMode);
+            if (!mode.has("setting_overrides")) {
+                return null;
+            }
+            JSONObject overrides = mode.getJSONObject("setting_overrides");
+            if (!overrides.has(settingKey)) {
+                return null;
+            }
+            int value = overrides.getInt(settingKey);
+            Log.d(TAG, "[POLICY] mode setting override key=" + settingKey
+                    + " → " + value + " (from mode '" + activeMode + "')");
+            return value;
+        } catch (JSONException e) {
+            Log.w(TAG, "[POLICY] Error reading mode setting override: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Returns the effective value of a global setting, considering mode overrides.
      * Resolution: active mode setting_overrides → base SharedPreferences →
      * defaultValue.
      */
     public static int getEffectiveSettingInt(Context context, String settingKey, int defaultValue) {
-        SharedPreferences prefs = get(context);
-        String activeMode = prefs.getString(KEY_ACTIVE_MODE, "");
-        if (activeMode != null && !activeMode.isEmpty()) {
-            try {
-                String modesJson = prefs.getString(KEY_MODES, "");
-                if (modesJson != null && !modesJson.isEmpty()) {
-                    JSONObject modes = new JSONObject(modesJson);
-                    if (modes.has(activeMode)) {
-                        JSONObject mode = modes.getJSONObject(activeMode);
-                        if (mode.has("setting_overrides")) {
-                            JSONObject overrides = mode.getJSONObject("setting_overrides");
-                            if (overrides.has(settingKey)) {
-                                int value = overrides.getInt(settingKey);
-                                Log.d(TAG, "[POLICY] getEffectiveSettingInt key=" + settingKey
-                                        + " → " + value + " (from mode '" + activeMode + "')");
-                                return value;
-                            }
-                        }
-                    }
-                }
-            } catch (JSONException e) {
-                Log.w(TAG, "[POLICY] Error reading mode setting override: " + e.getMessage());
-            }
+        Integer modeOverride = getModeSettingOverrideInt(context, settingKey);
+        if (modeOverride != null) {
+            return modeOverride;
         }
-        return prefs.getInt(settingKey, defaultValue);
+        return get(context).getInt(settingKey, defaultValue);
+    }
+
+    // ── Default-mode gate ─────────────────────────────────────────────────────
+
+    /**
+     * The ID of the always-on baseline mode. It is not a mode the user
+     * deliberately enters — it IS the base configuration, so base settings are
+     * editable while it (and only it) is active.
+     */
+    public static final String MODE_DEFAULT = "default";
+
+    /**
+     * ALWAYS TRUE. The former "base settings are editable only in Default mode"
+     * lock has been removed: the home-screen settings now write directly into the
+     * ACTIVE mode's overrides (see the RN AppDetail / Customize save paths), so a
+     * write can never be masked by the active mode — there is nothing to gate.
+     *
+     * Kept as a returning-true stub so any residual caller (native setter guards,
+     * the {@code getBaseSettingsEditable} bridge) keeps compiling and behaves as
+     * "always editable". Safety features (uninstall lock, settings lock,
+     * content-filter double-safe) carry their own independent friction and are
+     * unaffected by this method either way.
+     *
+     * Logging: [MODE_GATE]
+     */
+    public static boolean isBaseSettingsEditable(Context context) {
+        return true;
+    }
+
+    /**
+     * ALWAYS TRUE. See {@link #isBaseSettingsEditable(Context)} — the base-settings
+     * lock is removed. Retained so existing guard call sites keep compiling; every
+     * write now proceeds.
+     *
+     * @param operation Short name of the write, for parity with old call sites.
+     */
+    public static boolean assertBaseSettingsEditable(Context context, String operation) {
+        return true;
     }
 
     /**
@@ -804,6 +997,12 @@ public final class BreakPrefs {
         if (currentVersion >= DEFAULT_MODES_VERSION)
             return;
 
+        // An upgrade must not replace a user's existing modes.
+        if (!getModes(context).toString().equals("{}")) {
+            prefs.edit().putInt(KEY_DEFAULT_MODES_VERSION, DEFAULT_MODES_VERSION).apply();
+            return;
+        }
+
         // Mark version immediately to prevent re-runs
         prefs.edit().putInt(KEY_DEFAULT_MODES_VERSION, DEFAULT_MODES_VERSION).apply();
 
@@ -837,6 +1036,9 @@ public final class BreakPrefs {
             defaultTikTok.put(FEATURE_LAUNCH_POPUP, true);
             defaultPolicies.put("com.zhiliaoapp.musically", defaultTikTok);
             defaultMode.put("policy_overrides", defaultPolicies);
+            if (com.Break.onboarding.OnboardingStore.isFreshSetup(context)) {
+                defaultMode.put("policy_overrides", new JSONObject());
+            }
             defaultMode.put("setting_overrides", new JSONObject());
             modes.put("default", defaultMode);
 
@@ -896,6 +1098,10 @@ public final class BreakPrefs {
             schedule.put("end_time", "07:00");
             schedule.put("days", new org.json.JSONArray(new int[] { 0, 1, 2, 3, 4, 5, 6 }));
             bedtime.put("schedule", schedule);
+            if (com.Break.onboarding.OnboardingStore.isFreshSetup(context)) {
+                // A missing schedule is the existing disabled-schedule representation.
+                bedtime.remove("schedule");
+            }
             modes.put("bedtime", bedtime);
 
             // Testing: a throwaway mode for verifying the schedule timers yourself.
@@ -1070,10 +1276,10 @@ public final class BreakPrefs {
 
     /**
      * Browser bar / blocked-domain redirects (via {@link ReelsInterventionService}).
-     * Default true; Customize switch can turn it off without revoking accessibility permission.
+     * Opt-in: an absent preference is disabled. Explicitly saved choices are preserved.
      */
     public static boolean isContentFilterEnabled(Context context) {
-        return get(context).getBoolean(KEY_CONTENT_FILTER_ENABLED, true);
+        return get(context).getBoolean(KEY_CONTENT_FILTER_ENABLED, false);
     }
 
     /** Enables or disables the browser content filter. */
@@ -1095,6 +1301,227 @@ public final class BreakPrefs {
     /** Enables or disables the deletion-prevention lock screen. */
     public static void setUninstallLockEnabled(Context context, boolean enabled) {
         get(context).edit().putBoolean(KEY_UNINSTALL_LOCK_ENABLED, enabled).apply();
+    }
+
+    /**
+     * Whether the optional "type a phrase to delete" step is required after the
+     * uninstall pause. Default false (existing behavior unchanged). Never
+     * returns true when no usable phrase is stored, so an unsatisfiable
+     * requirement can't lock the user out.
+     */
+    public static boolean isUninstallPhraseRequired(Context context) {
+        SharedPreferences prefs = get(context);
+        return prefs.getBoolean(KEY_UNINSTALL_PHRASE_ENABLED, false)
+                && UninstallPhrase.isValid(prefs.getString(KEY_UNINSTALL_PHRASE, ""));
+    }
+
+    /** Raw toggle value (ignores phrase validity) — used by the settings UI. */
+    public static boolean getUninstallPhraseToggle(Context context) {
+        return get(context).getBoolean(KEY_UNINSTALL_PHRASE_ENABLED, false);
+    }
+
+    /**
+     * Returns the stored (trimmed) phrase, or "" if unset. Callers MUST NOT log it.
+     */
+    public static String getUninstallPhrase(Context context) {
+        return UninstallPhrase.normalize(get(context).getString(KEY_UNINSTALL_PHRASE, ""));
+    }
+
+    /**
+     * Stores the trimmed phrase. A blank phrase is rejected (returns false) and
+     * changes nothing. Returns true if persisted. The value is never logged.
+     *
+     * When the requirement is already on (locked), direct saves are refused —
+     * use {@link #changeUninstallPhrase(Context, String, String)} with the 1-hour
+     * gate instead. Saving while the requirement is off stays free so first-time
+     * setup and the enable flow work normally.
+     */
+    public static boolean setUninstallPhrase(Context context, String phrase) {
+        if (isUninstallPhraseChangeLocked(context)) {
+            return false;
+        }
+        String normalized = UninstallPhrase.normalize(phrase);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        get(context).edit().putString(KEY_UNINSTALL_PHRASE, normalized).apply();
+        return true;
+    }
+
+    /**
+     * Turns the phrase requirement ON. Rejected (false) when no usable phrase is
+     * stored. There is deliberately NO plain "turn off" setter: disabling only
+     * happens through {@link #confirmUninstallPhraseDisable(Context)} after the
+     * 1-hour wait ({@link PhraseDisableGate}).
+     */
+    public static boolean enableUninstallPhrase(Context context) {
+        if (!UninstallPhrase.isValid(get(context).getString(KEY_UNINSTALL_PHRASE, ""))) {
+            return false;
+        }
+        get(context).edit()
+                .putBoolean(KEY_UNINSTALL_PHRASE_ENABLED, true)
+                .remove(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT)
+                .apply();
+        return true;
+    }
+
+    /**
+     * Returns the live disable-request timestamp (epoch ms), or 0 if none. An
+     * expired request (1h wait + 15min window elapsed) is cleared, so the
+     * safeguard stays on and the next attempt restarts the wait.
+     */
+    public static long getUninstallPhraseDisableRequestAt(Context context) {
+        long at = get(context).getLong(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT, 0L);
+        if (at != 0L
+                && PhraseDisableGate.stateOf(at, System.currentTimeMillis()) == PhraseDisableGate.State.NONE) {
+            get(context).edit().remove(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT).apply();
+            return 0L;
+        }
+        return at;
+    }
+
+    /**
+     * Starts the disable wait if none is live (idempotent while one is live) and
+     * returns the request timestamp.
+     */
+    public static long requestUninstallPhraseDisable(Context context) {
+        long at = getUninstallPhraseDisableRequestAt(context);
+        if (at == 0L) {
+            at = System.currentTimeMillis();
+            get(context).edit().putLong(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT, at).apply();
+        }
+        return at;
+    }
+
+    /**
+     * Actually turns the requirement off. Succeeds ONLY while the request is in
+     * its READY window; otherwise returns false and changes nothing.
+     * Also clears any pending change request so it cannot carry over.
+     */
+    public static boolean confirmUninstallPhraseDisable(Context context) {
+        long at = getUninstallPhraseDisableRequestAt(context);
+        if (PhraseDisableGate.stateOf(at, System.currentTimeMillis()) != PhraseDisableGate.State.READY) {
+            return false;
+        }
+        get(context).edit()
+                .putBoolean(KEY_UNINSTALL_PHRASE_ENABLED, false)
+                .remove(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT)
+                .remove(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT)
+                .apply();
+        return true;
+    }
+
+    // ── Phrase change gate ────────────────────────────────────────────────────
+
+    /**
+     * True when the requirement is on AND a valid phrase is stored, meaning the
+     * phrase cannot be changed via {@link #setUninstallPhrase} directly — the
+     * caller must use the gated {@link #changeUninstallPhrase} path instead.
+     */
+    public static boolean isUninstallPhraseChangeLocked(Context context) {
+        return getUninstallPhraseToggle(context)
+                && UninstallPhrase.isValid(get(context).getString(KEY_UNINSTALL_PHRASE, ""));
+    }
+
+    /**
+     * Returns the live change-request timestamp (epoch ms), or 0 if none.
+     * An expired request is cleared and 0 is returned.
+     */
+    public static long getUninstallPhraseChangeRequestAt(Context context) {
+        long at = get(context).getLong(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT, 0L);
+        if (at != 0L
+                && PhraseDisableGate.stateOf(at, System.currentTimeMillis()) == PhraseDisableGate.State.NONE) {
+            get(context).edit().remove(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT).apply();
+            return 0L;
+        }
+        return at;
+    }
+
+    /**
+     * Starts the change wait if none is live (idempotent while one is live) and
+     * returns the request timestamp.
+     */
+    public static long requestUninstallPhraseChange(Context context) {
+        long at = getUninstallPhraseChangeRequestAt(context);
+        if (at == 0L) {
+            at = System.currentTimeMillis();
+            get(context).edit().putLong(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT, at).apply();
+        }
+        return at;
+    }
+
+    /** Result codes for {@link #changeUninstallPhrase}. */
+    public enum ChangeResult {
+        OK,
+        NOT_READY,
+        WRONG_CURRENT,
+        BLANK,
+        SAME
+    }
+
+    /**
+     * Atomically replaces the stored phrase. Enforces:
+     * 1. The change gate must be in its READY window.
+     * 2. {@code typedCurrent} must match the stored phrase (case-sensitive).
+     * 3. {@code newPhrase} must be non-blank after trimming.
+     * 4. {@code newPhrase} must differ from the stored phrase.
+     * On {@link ChangeResult#OK} the new phrase is saved and the change request
+     * is cleared. Neither phrase value is ever logged.
+     */
+    public static ChangeResult changeUninstallPhrase(
+            Context context, String typedCurrent, String newPhrase) {
+        long at = getUninstallPhraseChangeRequestAt(context);
+        if (PhraseDisableGate.stateOf(at, System.currentTimeMillis()) != PhraseDisableGate.State.READY) {
+            return ChangeResult.NOT_READY;
+        }
+        String current = getUninstallPhrase(context);
+        if (!UninstallPhrase.matches(current, typedCurrent)) {
+            return ChangeResult.WRONG_CURRENT;
+        }
+        String normalized = UninstallPhrase.normalize(newPhrase);
+        if (normalized.isEmpty()) {
+            return ChangeResult.BLANK;
+        }
+        if (normalized.equals(current)) {
+            return ChangeResult.SAME;
+        }
+        get(context).edit()
+                .putString(KEY_UNINSTALL_PHRASE, normalized)
+                .remove(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT)
+                .apply();
+        return ChangeResult.OK;
+    }
+
+    // ── Mindful Viewing Coach helpers ─────────────────────────────────────────
+
+    /**
+     * Whether the YouTube mindful-viewing coach is enabled. Default true so the
+     * gate is on once the feature ships; the Customize screen can turn it off.
+     *
+     * TEMP: coach disabled — revive later by restoring the prefs read below.
+     * YouTube App Open Intercept currently uses the delay overlay only.
+     */
+    public static boolean isCoachEnabled(Context context) {
+        // return get(context).getBoolean(KEY_COACH_ENABLED, true);
+        return false;
+    }
+
+    /** Enables or disables the YouTube viewing coach. */
+    public static void setCoachEnabled(Context context, boolean enabled) {
+        get(context).edit().putBoolean(KEY_COACH_ENABLED, enabled).apply();
+    }
+
+    /**
+     * Raw stored friction level string ("chill"|"balanced"|"strict"). Falls back
+     * to {@link #DEFAULT_COACH_MODE}. Parse with {@code Mode.fromString(...)}.
+     */
+    public static String getCoachMode(Context context) {
+        return get(context).getString(KEY_COACH_MODE, DEFAULT_COACH_MODE);
+    }
+
+    /** Persists the user's chosen friction level (lowercase mode key). */
+    public static void setCoachMode(Context context, String modeKey) {
+        get(context).edit().putString(KEY_COACH_MODE, modeKey).apply();
     }
 
     // Prevent instantiation

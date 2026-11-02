@@ -22,6 +22,7 @@ public class BreakReactPackage implements ReactPackage {
         List<NativeModule> modules = new ArrayList<>();
         modules.add(new VPNModule(reactContext));
         modules.add(new SettingsModule(reactContext));
+        modules.add(new ReflectionModule(reactContext));
         return modules;
     }
 

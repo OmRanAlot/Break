@@ -101,6 +101,103 @@ export const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
+  // Deletion phrase input (DeletionPhraseSection).
+  phraseBlock: {
+    marginTop: 10,
+  },
+  phraseInput: {
+    borderWidth: 1,
+    borderColor: L.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+    color: L.charcoal,
+  },
+  phraseInputError: {
+    borderColor: '#B91C1C',
+  },
+  phraseErrorText: {
+    fontSize: 12,
+    color: '#B91C1C',
+    marginTop: 6,
+  },
+  phraseSaveBtn: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    backgroundColor: L.charcoal,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  phraseSaveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  // Toggle label + InfoCircle side by side (double-safe disable row).
+  labelWithInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  // Paragraphs inside InfoCircle modals.
+  infoPara: {
+    fontSize: 13.5,
+    lineHeight: 20,
+    color: '#525252',
+    marginBottom: 12,
+  },
+
+  // ── Content-filter guard status panel ─────────────────────────────────────
+  guardStatusText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: L.muted,
+  },
+  guardStatusWarn: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#9a3412',
+    backgroundColor: '#fff4ed',
+    borderRadius: 10,
+    padding: 12,
+    fontWeight: '500',
+  },
+  guardStatusStrong: {
+    fontWeight: '700',
+    color: L.charcoal,
+  },
+  guardButtonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  guardConfirmButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    backgroundColor: '#9a3412',
+    marginRight: 10,
+  },
+  guardConfirmText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  guardCancelButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    backgroundColor: L.charcoal,
+  },
+  guardCancelText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+
   // ── Deletion-prevention info modal ────────────────────────────────────────
   infoModalOverlay: {
     flex: 1,
@@ -187,6 +284,37 @@ export const styles = StyleSheet.create({
     color: L.charcoal,
     fontWeight: '600',
   },
+  deletionCountdown: {
+    marginTop: 22,
+    fontSize: 48,
+    lineHeight: 56,
+    fontWeight: '700',
+    color: L.charcoal,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  deletionCountdownCaption: {
+    minHeight: 20,
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 18,
+    color: L.muted,
+    textAlign: 'center',
+  },
+  deletionDisableButtonDisabled: {
+    opacity: 0.35,
+  },
+  deletionDisableIntro: {
+    marginBottom: 10,
+  },
+  deletionDisableInstruction: {
+    marginBottom: 4,
+  },
+  deletionDisableButtonText: {
+    fontSize: 16,
+    color: '#b91c1c',
+    fontWeight: '600',
+  },
   permissionHint: {
     marginTop: 10,
     paddingHorizontal: 12,
@@ -209,6 +337,12 @@ export const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 12,
     marginBottom: 8,
+  },
+  // Generic "greyed out" style for a frozen control group — makes a read-only
+  // state visible rather than merely unresponsive. Currently unused (the base-
+  // settings mode lock was removed); kept for any future per-control gating.
+  sectionDisabled: {
+    opacity: 0.4,
   },
   stepperGroup: {
     flexDirection: 'row',
