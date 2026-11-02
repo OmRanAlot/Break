@@ -212,6 +212,9 @@ public final class BreakPrefs {
     // Epoch ms of the first "turn off" attempt; drives the 1h wait + 15min window
     // (see PhraseDisableGate). Never wipe in a reset-to-defaults routine.
     public static final String KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT = "uninstall_phrase_disable_request_at";
+    // Epoch ms of the first "change phrase" attempt; drives the same 1h wait + 15min
+    // window (see PhraseDisableGate). Never wipe in a reset-to-defaults routine.
+    public static final String KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT = "uninstall_phrase_change_request_at";
 
     // Twin-clock state for tamper detection (see UninstallLockManager).
     // request_at_wall = System.currentTimeMillis() captured at requestDelete()
@@ -1142,8 +1145,16 @@ public final class BreakPrefs {
     /**
      * Stores the trimmed phrase. A blank phrase is rejected (returns false) and
      * changes nothing. Returns true if persisted. The value is never logged.
+     *
+     * When the requirement is already on (locked), direct saves are refused —
+     * use {@link #changeUninstallPhrase(Context, String, String)} with the 1-hour
+     * gate instead. Saving while the requirement is off stays free so first-time
+     * setup and the enable flow work normally.
      */
     public static boolean setUninstallPhrase(Context context, String phrase) {
+        if (isUninstallPhraseChangeLocked(context)) {
+            return false;
+        }
         String normalized = UninstallPhrase.normalize(phrase);
         if (normalized.isEmpty()) {
             return false;
@@ -1200,6 +1211,7 @@ public final class BreakPrefs {
     /**
      * Actually turns the requirement off. Succeeds ONLY while the request is in
      * its READY window; otherwise returns false and changes nothing.
+     * Also clears any pending change request so it cannot carry over.
      */
     public static boolean confirmUninstallPhraseDisable(Context context) {
         long at = getUninstallPhraseDisableRequestAt(context);
@@ -1209,8 +1221,90 @@ public final class BreakPrefs {
         get(context).edit()
                 .putBoolean(KEY_UNINSTALL_PHRASE_ENABLED, false)
                 .remove(KEY_UNINSTALL_PHRASE_DISABLE_REQUEST_AT)
+                .remove(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT)
                 .apply();
         return true;
+    }
+
+    // ── Phrase change gate ────────────────────────────────────────────────────
+
+    /**
+     * True when the requirement is on AND a valid phrase is stored, meaning the
+     * phrase cannot be changed via {@link #setUninstallPhrase} directly — the
+     * caller must use the gated {@link #changeUninstallPhrase} path instead.
+     */
+    public static boolean isUninstallPhraseChangeLocked(Context context) {
+        return getUninstallPhraseToggle(context)
+                && UninstallPhrase.isValid(get(context).getString(KEY_UNINSTALL_PHRASE, ""));
+    }
+
+    /**
+     * Returns the live change-request timestamp (epoch ms), or 0 if none.
+     * An expired request is cleared and 0 is returned.
+     */
+    public static long getUninstallPhraseChangeRequestAt(Context context) {
+        long at = get(context).getLong(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT, 0L);
+        if (at != 0L
+                && PhraseDisableGate.stateOf(at, System.currentTimeMillis()) == PhraseDisableGate.State.NONE) {
+            get(context).edit().remove(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT).apply();
+            return 0L;
+        }
+        return at;
+    }
+
+    /**
+     * Starts the change wait if none is live (idempotent while one is live) and
+     * returns the request timestamp.
+     */
+    public static long requestUninstallPhraseChange(Context context) {
+        long at = getUninstallPhraseChangeRequestAt(context);
+        if (at == 0L) {
+            at = System.currentTimeMillis();
+            get(context).edit().putLong(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT, at).apply();
+        }
+        return at;
+    }
+
+    /** Result codes for {@link #changeUninstallPhrase}. */
+    public enum ChangeResult {
+        OK,
+        NOT_READY,
+        WRONG_CURRENT,
+        BLANK,
+        SAME
+    }
+
+    /**
+     * Atomically replaces the stored phrase. Enforces:
+     * 1. The change gate must be in its READY window.
+     * 2. {@code typedCurrent} must match the stored phrase (case-sensitive).
+     * 3. {@code newPhrase} must be non-blank after trimming.
+     * 4. {@code newPhrase} must differ from the stored phrase.
+     * On {@link ChangeResult#OK} the new phrase is saved and the change request
+     * is cleared. Neither phrase value is ever logged.
+     */
+    public static ChangeResult changeUninstallPhrase(
+            Context context, String typedCurrent, String newPhrase) {
+        long at = getUninstallPhraseChangeRequestAt(context);
+        if (PhraseDisableGate.stateOf(at, System.currentTimeMillis()) != PhraseDisableGate.State.READY) {
+            return ChangeResult.NOT_READY;
+        }
+        String current = getUninstallPhrase(context);
+        if (!UninstallPhrase.matches(current, typedCurrent)) {
+            return ChangeResult.WRONG_CURRENT;
+        }
+        String normalized = UninstallPhrase.normalize(newPhrase);
+        if (normalized.isEmpty()) {
+            return ChangeResult.BLANK;
+        }
+        if (normalized.equals(current)) {
+            return ChangeResult.SAME;
+        }
+        get(context).edit()
+                .putString(KEY_UNINSTALL_PHRASE, normalized)
+                .remove(KEY_UNINSTALL_PHRASE_CHANGE_REQUEST_AT)
+                .apply();
+        return ChangeResult.OK;
     }
 
     // ── Mindful Viewing Coach helpers ─────────────────────────────────────────

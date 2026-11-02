@@ -41,9 +41,17 @@
     android:layout_height="match_parent"
     android:background="#121212">
 
-    <LinearLayout
+    <!-- ScrollView wraps the whole content so the intent/followup input fields
+         stay reachable above the keyboard (managed by OverlayImeInsets). -->
+    <ScrollView
+        android:id="@+id/coach_scroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
         android:orientation="vertical"
         android:paddingStart="32dp"
         android:paddingEnd="32dp"
@@ -233,5 +241,7 @@
             android:enabled="false" />
 
     </LinearLayout>
+
+    </ScrollView>
 
 </FrameLayout>

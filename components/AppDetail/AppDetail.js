@@ -26,10 +26,10 @@ import {
   Text,
   Switch,
   TouchableOpacity,
-  ScrollView,
   Alert,
   NativeModules,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { MANAGED_APPS } from '../managedApps/manifest';
@@ -394,10 +394,12 @@ const AppDetail = ({ navigation, route }) => {
         <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView
+      <KeyboardAwareScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
       >
         {settingsLock.locked ? (
           <SettingsLockGate
@@ -596,7 +598,7 @@ const AppDetail = ({ navigation, route }) => {
             )}
           </>
         )}
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       {/* ── Sticky Save bar ──
           Hidden only while the settings-lock gate is showing (no form to save). */}

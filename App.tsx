@@ -34,6 +34,7 @@ import {
 } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 
 import { allGranted, parseSetup } from './components/Permissions/setupState';
 
@@ -75,6 +76,7 @@ const MainNavigator = ({
 }) => {
   return (
     <SafeAreaProvider>
+      <KeyboardProvider>
       <NavigationContainer ref={navigationRef} linking={linking}>
         <Stack.Navigator
           screenOptions={{ headerShown: false }}
@@ -96,6 +98,7 @@ const MainNavigator = ({
           />
         </Stack.Navigator>
       </NavigationContainer>
+      </KeyboardProvider>
     </SafeAreaProvider>
   );
 };
@@ -169,12 +172,14 @@ const App = () => {
   if (route === 'setup' || route === 'repair') {
     return (
       <SafeAreaProvider>
-        <PermissionsScreen
-          key={route}
-          initialState={setup}
-          repair={route === 'repair'}
-          onComplete={refresh}
-        />
+        <KeyboardProvider>
+          <PermissionsScreen
+            key={route}
+            initialState={setup}
+            repair={route === 'repair'}
+            onComplete={refresh}
+          />
+        </KeyboardProvider>
       </SafeAreaProvider>
     );
   }

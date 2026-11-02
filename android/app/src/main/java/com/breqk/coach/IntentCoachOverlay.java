@@ -22,6 +22,7 @@ import android.widget.TextView;
 
 import com.Break.R;
 import com.Break.prefs.BreakPrefs;
+import com.Break.ui.OverlayImeInsets;
 
 /**
  * IntentCoachOverlay
@@ -137,6 +138,11 @@ public final class IntentCoachOverlay {
                 BreakPrefs.get(context).edit()
                         .putBoolean(BreakPrefs.KEY_COACH_OVERLAY_VISIBLE, true)
                         .apply();
+
+                // Keep text fields visible above the soft keyboard.
+                android.widget.ScrollView coachScroll =
+                        root.findViewById(R.id.coach_scroll);
+                OverlayImeInsets.attach(root, coachScroll);
 
                 wireButtons();
                 startWaitPhase();

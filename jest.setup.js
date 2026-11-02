@@ -21,6 +21,55 @@ jest.mock('react-native-webview', () => {
   return { WebView: MockWebView, default: MockWebView };
 });
 
+// react-native-reanimated: minimal stub — the mock.js bundled with v3 requires
+// an internal './src/mock' path that is absent from the installed build.
+// We only need the stubs that react-native-keyboard-controller transitively
+// imports (Animated wrappers + worklet helpers); components under test do not
+// use reanimated directly.
+jest.mock('react-native-reanimated', () => {
+  const Animated = require('react-native').Animated;
+  function passthrough(val) { return val; }
+  return {
+    __esModule: true,
+    default: {
+      View: Animated.View,
+      Text: Animated.Text,
+      Image: Animated.Image,
+      ScrollView: Animated.ScrollView,
+      Value: Animated.Value,
+      createAnimatedComponent: Animated.createAnimatedComponent,
+    },
+    // Worklet helpers — used by keyboard-controller internally.
+    useSharedValue: (v) => ({ value: v }),
+    useAnimatedStyle: (fn) => fn(),
+    withTiming: passthrough,
+    withSpring: passthrough,
+    withDecay: passthrough,
+    withRepeat: passthrough,
+    runOnJS: (fn) => fn,
+    runOnUI: (fn) => fn,
+    cancelAnimation: () => {},
+    useDerivedValue: (fn) => ({ value: fn() }),
+    useAnimatedScrollHandler: () => () => {},
+    useAnimatedRef: () => ({ current: null }),
+    useAnimatedGestureHandler: () => () => {},
+    interpolate: (v) => v,
+    Extrapolate: { CLAMP: 'clamp', EXTEND: 'extend', IDENTITY: 'identity' },
+    Easing: { linear: passthrough, ease: passthrough, in: (e) => e, out: (e) => e },
+  };
+});
+
+// react-native-keyboard-controller: stub out the native module and hooks.
+jest.mock('react-native-keyboard-controller', () => {
+  const React = require('react');
+  const { View, ScrollView } = require('react-native');
+  return {
+    KeyboardProvider: ({ children }) => React.createElement(View, null, children),
+    KeyboardAwareScrollView: ScrollView,
+    KeyboardAvoidingView: View,
+  };
+});
+
 /**
  * Build a self-populating native-module mock: any method accessed returns a
  * jest.fn resolving to the given default value. Keeps the mock in sync with

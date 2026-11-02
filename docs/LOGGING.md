@@ -556,6 +556,7 @@ JS logs use `console.log('[Prefix] message')` so you can grep Metro output.
 | `[useDigitalWellbeing]` | `components/Home/useDigitalWellbeing.js` | Cache hits/misses, fetch duration, raw stat values, top apps count |
 | `[Customize]` | `components/Customize/customize.js` | Settings load/save, toggle states, preview actions, preset selection |
 | `[SettingsLock]` | `components/Customize/useSettingsLock.js`, `SettingsLockGate.js`, `SettingsLockSection.js` | Settings Change Lock UI: state refresh, mark-dirty, exit→startLock, enable/duration changes |
+| `[DeletionPhrase]` | `components/Customize/DeletionPhraseSection.js` | Typed-phrase deletion safeguard UI: enable/disable/change state transitions. Phrase values are never logged. |
 | `[PermissionsScreen]` | `components/Permissions/PermissionsScreen.js` | Permission request flow, screen advancement |
 | `[ModesScreen]` | `components/Modes/ModesScreen.js` | Modes list: load, activate/deactivate toggle, metadata save/delete |
 | `[ModeMeta]` | `components/Modes/ModeMetaSheet.js` | Mode metadata sheet (name/icon/color/schedule): save, unsaved-changes discard guard |
@@ -716,6 +717,10 @@ adb logcat -s AppUsageMonitor VPNModule BreakVpnService REELS_WATCH > session_lo
 | `free_break_start_time` | long | `0` | Epoch ms when the current break started (0 = no active break) |
 | `free_break_last_used_date` | String | `""` | "yyyy-MM-dd" of last break usage; resets at midnight (new calendar day) |
 | `content_filter_enabled` | boolean | `true` | Browser omnibar filter toggle (default on when never set; turn off in Customize) — read by `BrowserBarContentFilter` |
+| `uninstall_phrase_enabled` | boolean | `false` | Feature toggle: require the typed phrase after the uninstall pause. |
+| `uninstall_phrase` | String | `""` | The stored phrase (trimmed). Never logged. |
+| `uninstall_phrase_disable_request_at` | long | `0` | Epoch ms of the first "turn off phrase" attempt; drives the 1h wait + 15min window (PhraseDisableGate). |
+| `uninstall_phrase_change_request_at` | long | `0` | Epoch ms of the first "change phrase" attempt; drives the same 1h wait + 15min window. |
 | `uninstall_lock_enabled` | boolean | `false` | Feature toggle: show the 30s lock-in overlay on the Break uninstall screen (`[UNINSTALL_WATCH]`) |
 | `uninstall_lock_consent_version` | String | `""` | Consent version the user accepted for uninstall lock (current: `2026-05-12-v1`) |
 | `uninstall_lock_consent_at` | long | `0` | Epoch ms when uninstall-lock consent was given |

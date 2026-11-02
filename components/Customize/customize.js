@@ -22,12 +22,12 @@ import {
   Text,
   Switch,
   TouchableOpacity,
-  ScrollView,
   NativeModules,
   Animated,
   AppState,
   Linking,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import useDebouncedSaver from './useDebouncedSaver';
@@ -500,11 +500,12 @@ const Customize = ({ navigation }) => {
         <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView
+      <KeyboardAwareScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
       >
         {/* ── Settings Change Lock: read-only gate while the global scope is locked ── */}
         {settingsLock.locked ? (
@@ -739,7 +740,7 @@ const Customize = ({ navigation }) => {
         </View>
 
         <Text style={styles.footer}>v1.0 • Minimal Design</Text>
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       {/* ── Saved toast ──────────────────────────────────────────────── */}
       <Animated.View

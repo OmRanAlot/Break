@@ -18,6 +18,7 @@ import android.widget.TextView;
 
 import com.Break.R;
 import com.Break.prefs.BreakPrefs;
+import com.Break.ui.OverlayImeInsets;
 
 /**
  * Full-screen "don't delete Break" lock screen.
@@ -225,6 +226,11 @@ public class UninstallLockOverlay {
                 overlayView = null;
                 return;
             }
+
+            // Keep the phrase field and buttons visible above the keyboard.
+            android.widget.ScrollView lockScrollView =
+                    overlayView.findViewById(R.id.uninstall_lock_scroll);
+            OverlayImeInsets.attach(overlayView, lockScrollView);
 
             // Rotate the message every MESSAGE_ROTATE_MS until dismissed.
             rotateRunnable = new Runnable() {

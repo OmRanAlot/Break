@@ -5,15 +5,13 @@ import {
   Animated,
   AppState,
   BackHandler,
-  KeyboardAvoidingView,
   NativeModules,
-  Platform,
-  ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   AppSelectRow,
@@ -271,19 +269,16 @@ export default function PermissionsScreen({
 
   return (
     <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      <StepHeader
+        onBack={!repair && step > 0 && step < 5 && !busy ? back : undefined}
+        stepLabel={repair ? 'Restore permissions' : `Step ${step + 1} of 6`}
+      />
+      {!repair && <ProgressDots total={6} active={step} />}
+      <KeyboardAwareScrollView
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.scrollBody}
+        bottomOffset={24}
       >
-        <StepHeader
-          onBack={!repair && step > 0 && step < 5 && !busy ? back : undefined}
-          stepLabel={repair ? 'Restore permissions' : `Step ${step + 1} of 6`}
-        />
-        {!repair && <ProgressDots total={6} active={step} />}
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={styles.scrollBody}
-        >
           <Animated.View
             style={{ opacity }}
             pointerEvents={busy ? 'none' : 'auto'}
@@ -480,7 +475,6 @@ export default function PermissionsScreen({
               {error}
             </Text>
           ) : null}
-        </ScrollView>
         <View style={styles.footer}>
           {busy ? <ActivityIndicator color={T.ink} /> : null}
           {step === 0 && (
@@ -539,7 +533,7 @@ export default function PermissionsScreen({
             <PillButton label="Go to Home" onPress={() => onComplete(draft)} />
           )}
         </View>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScrollView>
       <DeletionInfoModal
         visible={consent}
         animationType={reducedMotion ? 'none' : 'fade'}

@@ -25,10 +25,10 @@ import {
   Text,
   TouchableOpacity,
   TextInput,
-  ScrollView,
   Modal,
   Alert,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path, Circle } from 'react-native-svg';
 import ModeIcon, { MODE_ICON_KEYS } from '../shared/ModeIcons';
@@ -233,10 +233,11 @@ const ModeMetaSheet = ({
           </TouchableOpacity>
         </View>
 
-        <ScrollView
+        <KeyboardAwareScrollView
           style={styles.modalScroll}
           contentContainerStyle={styles.modalScrollContent}
           keyboardShouldPersistTaps="handled"
+          bottomOffset={24}
         >
           <View style={styles.previewCard}>
             <View
@@ -401,7 +402,7 @@ const ModeMetaSheet = ({
               <Text style={styles.deleteBtnText}>Delete Mode</Text>
             </TouchableOpacity>
           )}
-        </ScrollView>
+        </KeyboardAwareScrollView>
 
         <TimePickerSheet
           visible={pickingTime !== null}

@@ -328,11 +328,17 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Saves the configured phrase (trimmed). Rejects blank values. The phrase is
-     * never logged.
+     * Saves the configured phrase (trimmed). Rejects blank values or attempts to
+     * change the phrase while the requirement is on (CHANGE_LOCKED). The phrase
+     * is never logged.
      */
     @ReactMethod
     public void saveUninstallPhrase(String phrase, Promise promise) {
+        if (BreakPrefs.isUninstallPhraseChangeLocked(reactContext)) {
+            Log.d(TAG, "[SAVE] saveUninstallPhrase blocked — CHANGE_LOCKED");
+            promise.reject("CHANGE_LOCKED", "Use changeUninstallPhrase while requirement is on");
+            return;
+        }
         boolean saved = BreakPrefs.setUninstallPhrase(reactContext, phrase);
         Log.d(TAG, "[SAVE] saveUninstallPhrase saved=" + saved);
         if (saved) {
@@ -358,8 +364,11 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         }
     }
 
-    /** Builds {state: none|waiting|ready, readyAt, expiresAt} for a request time. */
-    private WritableMap phraseDisableStatus(long requestAt) {
+    /**
+     * Builds {state: none|waiting|ready, readyAt, expiresAt} for a request time.
+     * Shared by both the disable and change flows.
+     */
+    private WritableMap phraseGateStatus(long requestAt) {
         PhraseDisableGate.State s = PhraseDisableGate.stateOf(requestAt, System.currentTimeMillis());
         WritableMap map = Arguments.createMap();
         map.putString("state", s.name().toLowerCase());
@@ -376,13 +385,13 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void requestUninstallPhraseDisable(Promise promise) {
         long at = BreakPrefs.requestUninstallPhraseDisable(reactContext);
         Log.d(TAG, "[SAVE] requestUninstallPhraseDisable");
-        promise.resolve(phraseDisableStatus(at));
+        promise.resolve(phraseGateStatus(at));
     }
 
     /** Current disable-request status (state "none" when no live request). */
     @ReactMethod
     public void getUninstallPhraseDisableStatus(Promise promise) {
-        promise.resolve(phraseDisableStatus(BreakPrefs.getUninstallPhraseDisableRequestAt(reactContext)));
+        promise.resolve(phraseGateStatus(BreakPrefs.getUninstallPhraseDisableRequestAt(reactContext)));
     }
 
     /** Turns the requirement off — only succeeds inside the 15-minute READY window. */
@@ -394,6 +403,53 @@ public class SettingsModule extends ReactContextBaseJavaModule {
             promise.resolve(true);
         } else {
             promise.reject("NOT_READY", "Disable window is not open");
+        }
+    }
+
+    // ── Phrase change gate ────────────────────────────────────────────────────
+
+    /**
+     * First "change phrase" attempt: starts the 1-hour wait (idempotent while a
+     * request is live) and returns its status. Does NOT change anything.
+     */
+    @ReactMethod
+    public void requestUninstallPhraseChange(Promise promise) {
+        long at = BreakPrefs.requestUninstallPhraseChange(reactContext);
+        Log.d(TAG, "[SAVE] requestUninstallPhraseChange");
+        promise.resolve(phraseGateStatus(at));
+    }
+
+    /** Current change-request status (state "none" when no live request). */
+    @ReactMethod
+    public void getUninstallPhraseChangeStatus(Promise promise) {
+        promise.resolve(phraseGateStatus(BreakPrefs.getUninstallPhraseChangeRequestAt(reactContext)));
+    }
+
+    /**
+     * Atomically replaces the phrase. Only succeeds inside the 15-minute READY window
+     * AND when {@code current} matches the stored phrase. Neither phrase is logged.
+     * Rejects with NOT_READY, WRONG_CURRENT, BLANK, or SAME on failure.
+     */
+    @ReactMethod
+    public void changeUninstallPhrase(String current, String next, Promise promise) {
+        BreakPrefs.ChangeResult result = BreakPrefs.changeUninstallPhrase(reactContext, current, next);
+        Log.d(TAG, "[SAVE] changeUninstallPhrase result=" + result.name());
+        switch (result) {
+            case OK:
+                promise.resolve(true);
+                break;
+            case NOT_READY:
+                promise.reject("NOT_READY", "Change window is not open");
+                break;
+            case WRONG_CURRENT:
+                promise.reject("WRONG_CURRENT", "Current phrase does not match");
+                break;
+            case BLANK:
+                promise.reject("BLANK", "New phrase must not be blank");
+                break;
+            case SAME:
+                promise.reject("SAME", "New phrase is the same as the current phrase");
+                break;
         }
     }
 

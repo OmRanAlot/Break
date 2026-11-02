@@ -14,13 +14,19 @@
         are revealed together by UninstallLockOverlay after the 30s wait.
       - The rotating message TextView is updated in code every few seconds with
         encouraging, anti-deletion copy.
+      - The phrase prompt, input and error sit ABOVE the delete button so that
+        when the keyboard opens the field and the confirm button remain visible.
 
     View IDs used by UninstallLockOverlay.java:
-      uninstall_lock_headline   — static headline
-      uninstall_lock_message    — rotating motivational message (updated in code)
-      uninstall_lock_keep_btn   — primary "Keep Break" (GONE until 30s → HOME)
-      uninstall_lock_delete_btn — discouraged "give up" escape (GONE until 30s →
-                                  dismiss + suppress so the OS uninstall proceeds)
+      uninstall_lock_scroll       — ScrollView (needed by OverlayImeInsets)
+      uninstall_lock_headline     — static headline
+      uninstall_lock_message      — rotating motivational message (updated in code)
+      uninstall_lock_home_btn     — "Return to home" (always visible)
+      uninstall_lock_keep_btn     — primary "Keep Break" (GONE until 60s → HOME)
+      uninstall_lock_phrase_prompt — "Type your phrase to continue" (GONE until 60s)
+      uninstall_lock_phrase_input  — EditText for the phrase (GONE until 60s)
+      uninstall_lock_phrase_error  — error text for phrase mismatch (GONE by default)
+      uninstall_lock_delete_btn   — discouraged "give up" escape (GONE until 60s)
 
     WindowManager params set in UninstallLockOverlay.show():
       TYPE_ACCESSIBILITY_OVERLAY, MATCH_PARENT × MATCH_PARENT, Gravity.CENTER
@@ -31,8 +37,10 @@
     android:layout_height="match_parent"
     android:background="#FAFAFA">
 
-    <!-- ScrollView keeps the phrase field + buttons reachable above the keyboard. -->
+    <!-- ScrollView keeps all content — including the phrase field + buttons — reachable
+         above the keyboard. The id is required by OverlayImeInsets.attach(). -->
     <ScrollView
+        android:id="@+id/uninstall_lock_scroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:fillViewport="true">
@@ -75,9 +83,7 @@
         <!--
             "Return to home": ALWAYS visible (not gated by the 60s wait). Lets
             the user leave to the launcher at any time. onClick →
-            GLOBAL_ACTION_HOME + dismiss. Pressing the physical Home button does
-            NOT auto-dismiss this overlay — the user must use one of the three
-            buttons (Return to home / Keep Break / Give up and delete).
+            GLOBAL_ACTION_HOME + dismiss.
         -->
         <Button
             android:id="@+id/uninstall_lock_home_btn"
@@ -92,8 +98,7 @@
 
         <!--
             Primary "Keep Break": visibility=gone here. UninstallLockOverlay
-            flips it to VISIBLE only after UNINSTALL_LOCK_DURATION_MS (60s) so
-            the user must sit with the messages first. onClick → GLOBAL_ACTION_HOME.
+            flips it to VISIBLE only after UNINSTALL_LOCK_DURATION_MS (60s).
         -->
         <Button
             android:id="@+id/uninstall_lock_keep_btn"
@@ -108,30 +113,12 @@
             android:layout_marginTop="40dp" />
 
         <!--
-            Discouraged escape: deliberately low-emphasis (muted outline, grey
-            text, loaded label). Also visibility=gone until the 30s wait. onClick
-            dismisses the lock and suppresses re-show so the system uninstall
-            can actually proceed.
-        -->
-        <Button
-            android:id="@+id/uninstall_lock_delete_btn"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:text="Give up and delete Break anyway"
-            android:textSize="14sp"
-            android:textAllCaps="false"
-            android:textColor="#737373"
-            android:background="@drawable/muted_pill_button_bg"
-            android:visibility="gone"
-            android:layout_marginTop="14dp" />
-
-        <!--
-            Optional typed-phrase step (only revealed after the wait AND only when
-            the user enabled "Require phrase to delete"). Both views start GONE.
-            Validation is enforced natively in UninstallLockOverlay when the delete
-            button is tapped — this field's visibility is not the security gate.
-            The text is flagged no-personalized-learning/password-ish so keyboards
-            don't store or echo it.
+            Optional typed-phrase step — sits ABOVE the delete button so the
+            field + prompt remain visible when the keyboard opens. Both views
+            start GONE and are revealed by UninstallLockOverlay after the wait.
+            Validation is enforced natively on delete-button tap; visibility is
+            not the security gate. The field uses no-personalized-learning so
+            keyboards do not store the phrase.
         -->
         <TextView
             android:id="@+id/uninstall_lock_phrase_prompt"
@@ -168,6 +155,24 @@
             android:gravity="center"
             android:visibility="gone"
             android:layout_marginTop="6dp" />
+
+        <!--
+            Discouraged escape: deliberately low-emphasis (muted outline, grey
+            text, loaded label). Also visibility=gone until the 60s wait. onClick
+            dismisses the lock and suppresses re-show so the system uninstall
+            can actually proceed.
+        -->
+        <Button
+            android:id="@+id/uninstall_lock_delete_btn"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="Give up and delete Break anyway"
+            android:textSize="14sp"
+            android:textAllCaps="false"
+            android:textColor="#737373"
+            android:background="@drawable/muted_pill_button_bg"
+            android:visibility="gone"
+            android:layout_marginTop="14dp" />
 
     </LinearLayout>
 
