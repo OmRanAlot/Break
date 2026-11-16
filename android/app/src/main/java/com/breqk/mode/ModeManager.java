@@ -75,6 +75,10 @@ public final class ModeManager {
         String previousMode = BreakPrefs.getActiveMode(context);
         if (!modeId.equals(previousMode) && !"default".equals(previousMode)) {
             ModeNotifier.notifyModeEnded(context, previousMode);
+            // Tear down the previous mode's persistent badge (if any) before we
+            // switch. Safe to call unconditionally — clearOngoing no-ops when there
+            // is nothing to cancel.
+            ModeNotifier.clearOngoing(context, previousMode);
         }
 
         prefs.edit()
@@ -92,6 +96,10 @@ public final class ModeManager {
         // always-on fallback, not a mode the user deliberately enters.
         if (!"default".equals(modeId)) {
             ModeNotifier.notifyModeStarted(context, modeId);
+            // Show the persistent "mode is active" badge if this mode opts in.
+            if (BreakPrefs.isModePersistentNotification(context, modeId)) {
+                ModeNotifier.showOngoing(context, modeId);
+            }
         }
 
         Log.i(TAG, "[ACTIVATE] Mode '" + modeId + "' is now active");
@@ -146,12 +154,24 @@ public final class ModeManager {
                 return;
             }
 
+            // Register START + END alarms independently. getNextAlarmTime() always
+            // returns the *next future* occurrence of each "HH:mm", so both already
+            // resolve correctly for overnight windows (e.g. 22:00→07:00).
+            //
+            // DO NOT add a "if end <= start, end += 24h" overnight adjustment here.
+            // When the START alarm fires and we re-register, START rolls forward to
+            // tomorrow while END is the upcoming morning — so end < start is the
+            // normal, correct state. The old adjustment shoved END a full day late,
+            // leaving overnight modes (Bedtime) stuck on and never switching back to
+            // default. See MODE_MGR bug fix.
+
             // Register start alarm
             long startMillis = getNextAlarmTime(startTime);
             PendingIntent startIntent = createAlarmIntent(context, modeId, ACTION_MODE_START);
             setExactAlarm(alarmManager, startMillis, startIntent);
             Log.i(TAG, "[SCHEDULE] Registered START alarm for mode '" + modeId
-                    + "' at " + startTime + " (epochMs=" + startMillis + ")");
+                    + "' at " + startTime + " (epochMs=" + startMillis
+                    + ", in " + minutesFromNow(startMillis) + " min)");
 
             // Register end alarm. getNextAlarmTime() already returns the next
             // FUTURE occurrence, which is always the correct end boundary — even
@@ -163,7 +183,8 @@ public final class ModeManager {
             PendingIntent endIntent = createAlarmIntent(context, modeId, ACTION_MODE_END);
             setExactAlarm(alarmManager, endMillis, endIntent);
             Log.i(TAG, "[SCHEDULE] Registered END alarm for mode '" + modeId
-                    + "' at " + endTime + " (epochMs=" + endMillis + ")");
+                    + "' at " + endTime + " (epochMs=" + endMillis
+                    + ", in " + minutesFromNow(endMillis) + " min)");
 
         } catch (JSONException e) {
             Log.e(TAG, "[SCHEDULE] Error registering alarms: " + e.getMessage());
@@ -491,6 +512,11 @@ public final class ModeManager {
             Log.w(TAG, "[SCHEDULE] SecurityException scheduling exact alarm — using inexact: " + e.getMessage());
             alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, intent);
         }
+    }
+
+    /** Minutes from now until the given epoch-millis trigger (for debug logging). */
+    private static long minutesFromNow(long triggerAtMillis) {
+        return (triggerAtMillis - System.currentTimeMillis()) / 60000L;
     }
 
     /**

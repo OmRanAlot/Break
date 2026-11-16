@@ -58,7 +58,7 @@ Filter with: `adb logcat -s <TAG>`
 | `BreakPrefs` | `prefs/BreakPrefs.java` | Per-app policy reads/writes, mode resolution, migration, blocked_apps sync |
 | `MODE_MGR` | `mode/ModeManager.java` | Mode activation/deactivation, schedule alarm registration, blocked_apps sync |
 | `MODE_SCHED` | `mode/ModeSchedulerReceiver.java` | AlarmManager schedule start/end intents, BOOT_COMPLETED re-registration |
-| `MODE_NOTIFY` | `mode/ModeNotifier.java` | User-visible notifications when a mode begins/ends |
+| `MODE_NOTIFY` | `mode/ModeNotifier.java` | User-visible notifications when a mode begins/ends, plus the ongoing "mode active" badge. All gated by `mode_notifs_enabled` |
 | `SETTINGS_LOCK` | `lock/SettingsLockManager.java` | Opt-in Settings Change Lock: per-scope (global / per-app) read-only edit lock. Logs `setEnabled`, `setDurationMs`, `startLock`, `getStateJson`. Pure read-time check — no AlarmManager/notification. |
 | `APP_ROUTER` | `shortform/AppEventRouter.java` | Event routing to LaunchInterceptor + ContentFilter (short-form stack); config cache hits/misses |
 | `LAUNCH_INTERCEPT` | `monitor/LaunchInterceptor.java` | 15s mindfulness overlay on fresh app open; fresh-launch check; dismiss/record |
@@ -176,6 +176,7 @@ adb logcat -s ScreenTimeTracker | findstr "[COMPREHENSIVE]" OR findstr "[UNLOCK_
 | `[HOME_DISMISS]` | Overlay force-dismissed via the fast path (DISMISS_OVERLAY intent from ReelsInterventionService → BreakVpnService → AppUsageMonitor), before the 1s polling tick fires |
 | `[RECENTS_DETECT]` | Foreground returned null (user is in recents / between apps); `allowedThisSession`, `appOpenTimestamps`, and `lastPopupShownTimestamps` are cleared for the departing app, and `currentForegroundApp` is reset to `""` — ensures returning to a blocked app re-arms the overlay (fixes home→blocked-app suppression bug) |
 | `[OVERLAY_PERSIST]` | User is in recents/launcher while overlay is active; overlay stays visible indefinitely instead of being dismissed (grace timer reset to 0). Overlay only dismisses when user switches to a different non-system app or exceeds safety timeout |
+| `[RECURRING_OVERLAY]` | Active mode has `recurring_overlay` enabled; intercept overlay re-shown on a blocked app because the per-mode interval (`overlay_interval_seconds`) elapsed since the last dismissal |
 | `[FG_DETECT]` | Enhanced foreground detection — background transitions, launcher resolution |
 
 Filter:
@@ -539,6 +540,7 @@ These markers appear inline inside log messages for filtering across tags.
 | `FREE_BREAK_ALLOW` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'FREE_BREAK_ALLOW'` | `adb logcat -s REELS_WATCH \| findstr "FREE_BREAK_ALLOW"` |
 | `[RECENTS_DETECT]` | `AppUsageMonitor.java` | `adb logcat -s AppUsageMonitor \| Select-String 'RECENTS_DETECT'` | `adb logcat -s AppUsageMonitor \| findstr "RECENTS_DETECT"` |
 | `[OVERLAY_PERSIST]` | `AppUsageMonitor.java` | `adb logcat -s AppUsageMonitor \| Select-String 'OVERLAY_PERSIST'` | `adb logcat -s AppUsageMonitor \| findstr "OVERLAY_PERSIST"` |
+| `[RECURRING_OVERLAY]` | `AppUsageMonitor.java` | `adb logcat -s AppUsageMonitor \| Select-String 'RECURRING_OVERLAY'` | `adb logcat -s AppUsageMonitor \| findstr "RECURRING_OVERLAY"` |
 | `[AUTO_DISMISS_GRACE]` | `AppUsageMonitor.java` | `adb logcat -s AppUsageMonitor \| Select-String 'AUTO_DISMISS_GRACE'` | `adb logcat -s AppUsageMonitor \| findstr "AUTO_DISMISS_GRACE"` |
 | `[AUTO_DISMISS_CLEAR]` | `AppUsageMonitor.java` | `adb logcat -s AppUsageMonitor \| Select-String 'AUTO_DISMISS_CLEAR'` | `adb logcat -s AppUsageMonitor \| findstr "AUTO_DISMISS_CLEAR"` |
 | `[HOME_DISMISS]` | `ReelsInterventionService.java`, `BreakVpnService.java`, `AppUsageMonitor.java` | `adb logcat \| Select-String '\[HOME_DISMISS\]'` | `adb logcat \| findstr "[HOME_DISMISS]"` |

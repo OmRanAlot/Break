@@ -896,6 +896,21 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         }
     }
 
+    /** Reads the global mode-notifications toggle (default true). */
+    @ReactMethod
+    public void getModeNotifsEnabled(Callback callback) {
+        boolean enabled = BreakPrefs.isModeNotifsEnabled(reactContext);
+        Log.d(TAG, "[MODE] getModeNotifsEnabled → " + enabled);
+        callback.invoke(enabled);
+    }
+
+    /** Sets the global mode-notifications toggle. */
+    @ReactMethod
+    public void setModeNotifsEnabled(boolean enabled) {
+        Log.d(TAG, "[MODE] setModeNotifsEnabled=" + enabled);
+        BreakPrefs.setModeNotifsEnabled(reactContext, enabled);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Browser content filter methods
     // ═══════════════════════════════════════════════════════════════════════════

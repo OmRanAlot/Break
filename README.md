@@ -78,4 +78,6 @@ Usage monitoring and intervention are performed on device. Reflection data is st
 
 ## License
 
-This repository is private and proprietary.
+This repository is public! Fork it, clone it, do whatever you want!
+Just give the original credits to me please!
+
